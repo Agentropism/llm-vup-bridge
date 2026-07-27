@@ -1,0 +1,33 @@
+# ---------- Go ----------
+/distillery
+*.exe
+*.test
+*.out
+/vendor/
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+
+# ---------- LLM-Vup / Open-LLM-VTuber ----------
+# 上游仓库需自行克隆（可放到本目录下），不随本模块分发
+/LLM-Vup/
+
+# ---------- 本地配置与密钥 ----------
+/config.json
+*.env
+!.env.example
+
+# ---------- 运行产物 ----------
+*.log
+cache/
+
+# ---------- IDE / OS ----------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db

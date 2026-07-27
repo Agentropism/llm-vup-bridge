@@ -1,0 +1,21 @@
+{
+  "listen_addr": ":9528",
+  "tts_addr": "http://localhost:9527",
+  "vtuber_addr": "http://localhost:12393",
+  "llm": {
+    "endpoint": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key": "sk-在此填入你的key"
+  },
+  "speech": {
+    "cooldown_sec": 5,
+    "gift_bypass_cooldown": true,
+    "reply_chance": {
+      "chat": 0.6,
+      "greeting": 0.8,
+      "question": 0.95,
+      "command": 0.9,
+      "gift_thanks": 1.0
+    }
+  }
+}
