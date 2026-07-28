@@ -24,10 +24,16 @@ import (
 type AppConfig struct {
 	ListenAddr string `json:"listen_addr"`
 	TTSAddr    string `json:"tts_addr"`
-	// VTuber 前端 (LLM-Vup) 地址，非空时回复注入到 Live2D 形象播报；
-	// 置空字符串则回退到 synapse-tts 本地放音
 	VTuberAddr string `json:"vtuber_addr"`
-	LLM        struct {
+	// Mimo TTS 直连配置（非空时优先使用，绕过 LLM-Vup 的 TTS 引擎）
+	Mimo struct {
+		APIKey  string `json:"api_key"`
+		BaseURL string `json:"base_url"`
+		Model   string `json:"model"`
+		Voice   string `json:"voice"`
+		Format  string `json:"format"`
+	} `json:"mimo"`
+	LLM struct {
 		Endpoint string `json:"endpoint"`
 		Model    string `json:"model"`
 		APIKey   string `json:"api_key"`
@@ -43,6 +49,10 @@ func loadConfig(path string) AppConfig {
 	cfg := AppConfig{ListenAddr: ":9528", TTSAddr: "http://localhost:9527", VTuberAddr: "http://localhost:12393"}
 	cfg.LLM.Endpoint = "https://api.openai.com/v1"
 	cfg.LLM.Model = "gpt-4o-mini"
+	cfg.Mimo.Model = "mimo-v2.5-tts"
+	cfg.Mimo.Voice = "冰糖"
+	cfg.Mimo.Format = "mp3"
+	cfg.Mimo.BaseURL = "https://api.xiaomimimo.com/v1"
 	cfg.Speech.CooldownSec = 5
 	cfg.Speech.GiftBypass = true
 	cfg.Speech.ReplyChance = map[string]float64{
@@ -66,6 +76,12 @@ func loadConfig(path string) AppConfig {
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
+	if v := os.Getenv("MIMO_API_KEY"); v != "" {
+		cfg.Mimo.APIKey = v
+	}
+	if v := os.Getenv("MIMO_VOICE"); v != "" {
+		cfg.Mimo.Voice = v
+	}
 	if v := os.Getenv("TTS_ADDR"); v != "" {
 		cfg.TTSAddr = v
 	}
@@ -85,10 +101,23 @@ func main() {
 	cfg := loadConfig(*cfgPath)
 	ttsClient := tts.NewClient(cfg.TTSAddr)
 
-	// VTuberAddr 非空时启用 VTuber 前端播报，否则回退 synapse-tts 本地放音
 	var vtuberClient *vtuber.Client
 	if cfg.VTuberAddr != "" {
 		vtuberClient = vtuber.NewClient(cfg.VTuberAddr)
+	}
+
+	var mimoClient *tts.MimoClient
+	if cfg.Mimo.APIKey != "" {
+		mimoCfg := tts.MimoConfig{
+			APIKey:   cfg.Mimo.APIKey,
+			BaseURL:  cfg.Mimo.BaseURL,
+			Model:    cfg.Mimo.Model,
+			Voice:    cfg.Mimo.Voice,
+			Format:   cfg.Mimo.Format,
+			CacheDir: "cache",
+		}
+		mimoClient = tts.NewMimoClient(mimoCfg)
+		log.Printf("[mimo] 直连 MiMo TTS | voice=%s | model=%s", cfg.Mimo.Voice, cfg.Mimo.Model)
 	}
 
 	llmCfg := llm.LLMConfig{
@@ -97,7 +126,6 @@ func main() {
 		APIKey:   cfg.LLM.APIKey,
 	}
 
-	// 发言调度器
 	sw := dispatch.SpeechWeight{
 		ReplyChance:        cfg.Speech.ReplyChance,
 		Cooldown:           time.Duration(cfg.Speech.CooldownSec) * time.Second,
@@ -113,15 +141,16 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
-		go handleEvent(req.Context(), event, llmCfg, ttsClient, vtuberClient, dispatcher)
+		go handleEvent(req.Context(), event, llmCfg, ttsClient, vtuberClient, mimoClient, dispatcher)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 	})
 
 	r.Post("/test", func(w http.ResponseWriter, req *http.Request) {
 		var body struct {
-			Text string `json:"text"`
-			User string `json:"user"`
-			Type string `json:"type"` // text, gift, super_chat, captain
+			Text  string `json:"text"`
+			User  string `json:"user"`
+			Type  string `json:"type"`
+			Emoji string `json:"emotion"`
 		}
 		json.NewDecoder(req.Body).Decode(&body)
 		if body.User == "" {
@@ -130,6 +159,9 @@ func main() {
 		if body.Type == "" {
 			body.Type = "text"
 		}
+		if body.Emoji == "" {
+			body.Emoji = "smirk"
+		}
 
 		event := model.UnifiedEvent{
 			Platform:    "test",
@@ -137,28 +169,37 @@ func main() {
 			Content:     body.Text,
 			MessageType: body.Type,
 		}
-
-		result := processEvent(req.Context(), event, llmCfg, ttsClient, vtuberClient, dispatcher)
+		result := processEvent(req.Context(), event, llmCfg, ttsClient, vtuberClient, mimoClient, dispatcher)
 		writeJSON(w, http.StatusOK, result)
 	})
 
-	r.Post("/tts/stop", func(w http.ResponseWriter, req *http.Request) {
-		ttsClient.Stop(req.Context())
-		writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-	})
-
-	r.Post("/tts/skip", func(w http.ResponseWriter, req *http.Request) {
-		ttsClient.Skip(req.Context())
-		writeJSON(w, http.StatusOK, map[string]string{"status": "skipped"})
-	})
-
-	r.Get("/tts/status", func(w http.ResponseWriter, req *http.Request) {
-		st, err := ttsClient.Status(req.Context())
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	// Mimo TTS 直连测试端点
+	r.Post("/tts/mimo", func(w http.ResponseWriter, req *http.Request) {
+		if mimoClient == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mimo not configured"})
 			return
 		}
-		writeJSON(w, http.StatusOK, st)
+		var body struct {
+			Text    string `json:"text"`
+			Emotion string `json:"emotion"`
+			Speed   float64 `json:"speed"`
+		}
+		json.NewDecoder(req.Body).Decode(&body)
+		if body.Text == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty text"})
+			return
+		}
+		// 如果指定了情绪，在文本前加标签
+		tagged := body.Text
+		if body.Emotion != "" {
+			tagged = "[" + body.Emotion + "] " + body.Text
+		}
+		filePath, err := mimoClient.GenerateAudio(req.Context(), tagged, "test")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "file": filePath})
 	})
 
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
@@ -179,8 +220,12 @@ func main() {
 	if vtuberInfo == "" {
 		vtuberInfo = "disabled"
 	}
+	t := "synapse"
+	if mimoClient != nil {
+		t = "mimo"
+	}
 	log.Printf("[distillery] 启动 | 监听: %s | VTuber: %s | TTS: %s | LLM: %s (%s) | 冷却: %ds",
-		cfg.ListenAddr, vtuberInfo, cfg.TTSAddr, cfg.LLM.Endpoint, cfg.LLM.Model, cfg.Speech.CooldownSec)
+		cfg.ListenAddr, vtuberInfo, t, cfg.LLM.Endpoint, cfg.LLM.Model, cfg.Speech.CooldownSec)
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("[distillery] 服务异常: %v", err)
@@ -196,8 +241,8 @@ type ProcessResult struct {
 	SkipReason string `json:"skip_reason,omitempty"`
 }
 
-func handleEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, dispatcher *dispatch.Dispatcher) {
-	result := processEvent(ctx, event, llmCfg, ttsClient, vtuberClient, dispatcher)
+func handleEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, dispatcher *dispatch.Dispatcher) {
+	result := processEvent(ctx, event, llmCfg, ttsClient, vtuberClient, mimoClient, dispatcher)
 	if result.Responded {
 		log.Printf("[distillery] [%s] %s → %s | emotion=%s | tts=%v | %.40s",
 			event.Platform, event.UserName, result.IntentType, result.Emotion, result.TTSSpoken, result.ReplyText)
@@ -206,25 +251,45 @@ func handleEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMCo
 	}
 }
 
-func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, dispatcher *dispatch.Dispatcher) ProcessResult {
+func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, dispatcher *dispatch.Dispatcher) ProcessResult {
 	priority := dispatch.PriorityFor(event.MessageType)
 
 	// ── 礼物/SC/舰长：直接生成感谢，不走 LLM ──
 	if event.MessageType == "gift" || event.MessageType == "super_chat" || event.MessageType == "captain" {
+		if !dispatcher.ShouldRespond("gift_thanks", priority) {
+			return ProcessResult{SkipReason: "cooldown"}
+		}
+
+		if event.MessageType == "super_chat" && event.Content != "" {
+			thanks, followUp := dispatch.BuildSCReply(event)
+			spoken := sendTTS(ctx, ttsClient, vtuberClient, mimoClient, thanks, "joy", 0.9)
+			if followUp != "" {
+				time.Sleep(1500 * time.Millisecond)
+				sendTTS(ctx, ttsClient, vtuberClient, mimoClient, followUp, "smirk", 0.7)
+			}
+			fullText := thanks
+			if followUp != "" {
+				fullText += " | " + followUp
+			}
+			return ProcessResult{
+				Responded: true, ReplyText: fullText,
+				Emotion: "joy", IntentType: "sc_reply", TTSSpoken: spoken,
+			}
+		}
+
 		replyText := dispatch.BuildGiftReply(event)
 		if replyText == "" {
 			return ProcessResult{SkipReason: "empty gift reply"}
 		}
 
-		// 礼物必回，但仍检查调度器（冷却由 GiftBypass 控制）
-		if !dispatcher.ShouldRespond("gift_thanks", priority) {
-			return ProcessResult{SkipReason: "cooldown"}
+		emo := "joy"
+		if event.MessageType == "captain" {
+			emo = "surprise"
 		}
-
-		spoken := sendTTS(ctx, ttsClient, vtuberClient, replyText, "joy", 0.9)
+		spoken := sendTTS(ctx, ttsClient, vtuberClient, mimoClient, replyText, emo, 0.9)
 		return ProcessResult{
 			Responded: true, ReplyText: replyText,
-			Emotion: "joy", IntentType: "gift_thanks", TTSSpoken: spoken,
+			Emotion: emo, IntentType: "gift_thanks", TTSSpoken: spoken,
 		}
 	}
 
@@ -235,24 +300,21 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 		return ProcessResult{SkipReason: "llm error"}
 	}
 
-	// 发言权重判定
 	if !dispatcher.ShouldRespond(analysis.IntentType, priority) {
 		return ProcessResult{
 			SkipReason: "weight/cooldown", IntentType: analysis.IntentType, Emotion: analysis.Emotion,
 		}
 	}
 
-	// 不需要回复
 	if !analysis.ShouldReply || analysis.ReplyText == "" {
 		return ProcessResult{
 			SkipReason: "no reply needed", IntentType: analysis.IntentType, Emotion: analysis.Emotion,
 		}
 	}
 
-	// TTS：should_speak + tts_enabled 都满足才出声
 	spoken := false
 	if analysis.ShouldSpeak && analysis.TTSEnabled {
-		spoken = sendTTS(ctx, ttsClient, vtuberClient, analysis.ReplyText, analysis.Emotion, analysis.Intensity)
+		spoken = sendTTS(ctx, ttsClient, vtuberClient, mimoClient, analysis.ReplyText, analysis.Emotion, analysis.Intensity)
 	}
 
 	return ProcessResult{
@@ -261,9 +323,23 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 	}
 }
 
-// sendTTS 发送回复播报：优先注入 VTuber 前端（Live2D 形象出声+表情），
-// 未配置 VTuber 时回退到 synapse-tts 本地放音（带情绪调节参数）
-func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Client, text, emo string, intensity float64) bool {
+func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, text, emo string, intensity float64) bool {
+	// 优先 Mimo 直连（绕过 LLM-Vup 的 TTS 引擎）
+	if mimoClient != nil {
+		tagged := text
+		if emo != "" {
+			tagged = "[" + emo + "] " + text
+		}
+		filePath, err := mimoClient.GenerateAudio(ctx, tagged, "speech")
+		if err != nil {
+			log.Printf("[distillery] Mimo TTS 失败: %v", err)
+			return false
+		}
+		log.Printf("[distillery] Mimo TTS 生成: %s (%d bytes)", filePath, 0) // simplified
+		return true
+	}
+
+	// 其次 VTuber /inject 注入
 	if vtuberClient != nil {
 		err := vtuberClient.Speak(ctx, vtuber.SpeakRequest{
 			Text:      text,
@@ -277,23 +353,23 @@ func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Clien
 		return true
 	}
 
+	// 回退 synapse-tts
 	params := emotion.Modulate(emo, intensity)
-
-	err := client.SpeakWithOpts(ctx, tts.SpeakRequest{
+	req := tts.SpeakRequest{
 		Text:   text,
 		Rate:   params.Rate,
-		Pitch:  params.Pitch,
 		Volume: params.Volume,
-	})
-	if err != nil {
-		log.Printf("[distillery] TTS 发送失败: %v", err)
+		Pitch:  params.Pitch,
+	}
+	if err := client.SpeakWithOpts(ctx, req); err != nil {
+		log.Printf("[distillery] TTS 播放失败: %v", err)
 		return false
 	}
 	return true
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
 }

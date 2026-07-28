@@ -40,8 +40,8 @@ func Analyze(ctx context.Context, userMsg, userName string, cfg LLMConfig) (*Ana
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": fmt.Sprintf("[用户:%s] %s", userName, userMsg)},
 		},
-		"temperature": 0.3,
-		"max_tokens":  512,
+		"temperature": 0.7,
+		"max_tokens":  1024,
 	}
 
 	reqBody, _ := json.Marshal(body)
