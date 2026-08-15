@@ -120,13 +120,23 @@ func (m *MimoClient) ParseEmotion(text string) (context string, speed float64, m
 	return p.Context, p.Speed, p.MimoEmo, ""
 }
 
-// GenerateAudio 生成音频文件，返回文件路径
+// GenerateAudio 生成音频文件，返回文件路径。
 func (m *MimoClient) GenerateAudio(ctx context.Context, text, filePrefix string) (string, error) {
-	emoCtx, speed, mimoEmo, boost := m.ParseEmotion(text)
+	return m.generateAudio(ctx, text, filePrefix, 0)
+}
+
+// GenerateAudioBoost 生成音频文件；queueBoost>0 时在情绪基准语速上额外加速（积压加速）。
+func (m *MimoClient) GenerateAudioBoost(ctx context.Context, text, filePrefix string, queueBoost float64) (string, error) {
+	return m.generateAudio(ctx, text, filePrefix, queueBoost)
+}
+
+func (m *MimoClient) generateAudio(ctx context.Context, text, filePrefix string, queueBoost float64) (string, error) {
+	emoCtx, speed, mimoEmo, boostText := m.ParseEmotion(text)
 	ttsText := text
-	if boost != "" {
-		ttsText = strings.TrimSpace(text + boost)
+	if boostText != "" {
+		ttsText = strings.TrimSpace(text + boostText)
 	}
+	speed += queueBoost
 
 	audioParams := map[string]any{
 		"voice":  m.cfg.Voice,

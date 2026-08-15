@@ -1,6 +1,10 @@
 package emotion
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // TTSParams 情绪调节后的 TTS 参数
 type TTSParams struct {
@@ -49,4 +53,19 @@ func Modulate(emo string, intensity float64) TTSParams {
 		Pitch:  fmt.Sprintf("%+.0fHz", p.Pitch*intensity),
 		Volume: fmt.Sprintf("%+.0f%%", p.Volume*intensity),
 	}
+}
+
+// BoostRate 在现有 Rate 百分比上叠加 boost（积压加速），返回新参数。
+// 例如 Rate "+25%"、boost 0.15 → "+40%"；解析失败时原样返回。
+func BoostRate(p TTSParams, boost float64) TTSParams {
+	if boost <= 0 {
+		return p
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(p.Rate, "+"), "%")
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return p
+	}
+	p.Rate = fmt.Sprintf("%+.0f%%", float64(v)+boost*100)
+	return p
 }

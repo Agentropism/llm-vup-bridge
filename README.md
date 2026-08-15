@@ -87,6 +87,35 @@ CGO_ENABLED=0 go run ./cmd/distillery/
 | `TTS_ADDR` | synapse-tts 地址 |
 | `LISTEN_ADDR` | distillery 监听地址 |
 
+## 发言优先级调度（PRD 第四部分）
+
+distillery 内置单消费者优先级调度器（`internal/dispatch/scheduler.go`），所有发言任务经 `POST /event` 入队后**串行执行，TTS 播放互不重叠**：
+
+| 行为 | 规则 |
+|------|------|
+| 消费顺序 | 按优先级插队：舰长 > SC > 礼物 > 普通消息；同优先级先到先得 |
+| 超时丢弃 | 排队超过 `ttl_text_sec`（普通消息）/ `ttl_gift_sec`（礼物/SC/舰长）直接丢弃 |
+| 打断 | SC 感谢/礼物/舰长等系统事件**不可打断**；普通 LLM 互动可被更高优先级任务打断（synapse-tts 走 `/stop`，Mimo/注入路径取消在途请求） |
+| 积压加速 | 排队任务数 ≥ `backlog_threshold` 时，普通消息语速提升 `backlog_speed_boost`（Mimo 为 speed 增量，synapse 为 rate 百分比增量）；系统事件保持原速 |
+| 队列满 | 淘汰优先级最低的排队任务；新任务优先级不高于被淘汰者时丢弃新任务 |
+
+`speech` 配置新增字段：
+
+```jsonc
+"speech": {
+  "cooldown_sec": 5,
+  "gift_bypass_cooldown": true,
+  "reply_chance": { "chat": 0.6, "greeting": 0.8, "question": 0.95, "command": 0.9, "gift_thanks": 1.0 },
+  "ttl_text_sec": 10,          // 普通消息排队时限（秒）
+  "ttl_gift_sec": 60,          // 礼物/SC/舰长排队时限（秒）
+  "queue_max_size": 64,        // 队列容量，0=不限
+  "backlog_threshold": 3,      // 积压加速阈值，0=禁用
+  "backlog_speed_boost": 0.15  // 积压加速量
+}
+```
+
+`POST /test` 为同步测试端点，不经过优先级队列。待机动画打断属前端行为，不在本仓库实现。
+
 ## TTS 路径优先级
 
 1. **Mimo 直连**（`mimo.api_key` 非空）→ 直接调用 Mimo API，绕过 LLM-Vup

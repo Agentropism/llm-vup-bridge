@@ -16,6 +16,11 @@
       "question": 0.95,
       "command": 0.9,
       "gift_thanks": 1.0
-    }
+    },
+    "ttl_text_sec": 10,
+    "ttl_gift_sec": 60,
+    "queue_max_size": 64,
+    "backlog_threshold": 3,
+    "backlog_speed_boost": 0.15
   }
 }
