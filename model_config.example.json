@@ -1,0 +1,7 @@
+{
+  "llm": {
+    "endpoint": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "api_key": "sk-在此填入你的key"
+  }
+}

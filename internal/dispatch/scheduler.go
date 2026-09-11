@@ -25,6 +25,9 @@ type SpeakTask struct {
 	Stop func()
 	// OnDrop 任务被丢弃时的回调（超时 / 队列满淘汰 / 调度器关闭）。
 	OnDrop func(reason string)
+	// Submitted 任务提交结果回调（可空）：accepted=false 表示提交阶段即被丢弃。
+	// 仅用于观测，调度行为不依赖它。
+	Submitted func(accepted bool)
 }
 
 // SchedulerOptions 调度器配置。
@@ -96,23 +99,23 @@ func (s *Scheduler) Submit(task *SpeakTask) {
 		return
 	}
 
-	var dropNew    func() // 在锁外执行的「丢弃新任务」回调
-	var dropOld    func() // 在锁外执行的「被淘汰任务」回调
-	var stopFn     func() // 在锁外执行的后端停止回调
+	var dropNew func() // 在锁外执行的「丢弃新任务」回调
+	var dropOld func() // 在锁外执行的「被淘汰任务」回调
+	var stopFn func()  // 在锁外执行的后端停止回调
 	interrupt := false
 
 	s.mu.Lock()
 	if s.closed {
-		dropNew = func() { task.OnDrop("scheduler closed") }
+		dropNew = func() { notifyDrop(task, "scheduler closed") }
 	} else {
 		// 队列满：淘汰优先级最低的排队任务；新任务优先级不高于被淘汰者时丢弃新任务
 		if s.queueCap > 0 && s.h.Len() >= s.queueCap {
 			if lowest := s.h.lowest(); lowest == nil || task.Priority <= lowest.task.Priority {
-				dropNew = func() { task.OnDrop("queue full") }
+				dropNew = func() { notifyDrop(task, "queue full") }
 			} else {
 				evicted := lowest.task
 				heap.Remove(&s.h, lowest.index)
-				dropOld = func() { evicted.OnDrop("queue full evicted") }
+				dropOld = func() { notifyDrop(evicted, "queue full evicted") }
 			}
 		}
 
@@ -140,6 +143,9 @@ func (s *Scheduler) Submit(task *SpeakTask) {
 
 	if dropNew != nil {
 		dropNew()
+		if task.Submitted != nil {
+			task.Submitted(false)
+		}
 		return
 	}
 	if dropOld != nil {
@@ -147,6 +153,17 @@ func (s *Scheduler) Submit(task *SpeakTask) {
 	}
 	if interrupt && stopFn != nil {
 		stopFn()
+	}
+	if task.Submitted != nil {
+		task.Submitted(true)
+	}
+}
+
+// notifyDrop 触发任务的丢弃回调；OnDrop 为可空字段（SpeakTask 允许不设），
+// 缺失时静默跳过，避免调用方因未注册回调而 panic。
+func notifyDrop(task *SpeakTask, reason string) {
+	if task != nil && task.OnDrop != nil {
+		task.OnDrop(reason)
 	}
 }
 
@@ -188,7 +205,7 @@ func (s *Scheduler) waitTask() *SpeakTask {
 			node := heap.Pop(&s.h).(*taskNode)
 			s.mu.Unlock()
 			if time.Now().After(node.task.Deadline) {
-				node.task.OnDrop("timeout")
+				notifyDrop(node.task, "timeout")
 				continue
 			}
 			return node.task

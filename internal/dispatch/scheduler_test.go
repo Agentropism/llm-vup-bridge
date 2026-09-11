@@ -299,6 +299,39 @@ func TestSchedulerBacklogBoost(t *testing.T) {
 	}
 }
 
+// Submitted 回调必须在 Submit 返回前同步给出结论：
+// 入队成功 accepted=true，提交阶段被拒 accepted=false（调试台依赖此语义标注「排队中/被丢弃」）。
+func TestSchedulerSubmittedCallback(t *testing.T) {
+	s := NewScheduler(SchedulerOptions{QueueCap: 1})
+	s.Start()
+	defer s.Close()
+
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	s.Submit(holderTask(gate, started))
+	<-started // 占住消费者
+
+	// 入队成功：Submit 返回后 accepted 已经是 true
+	ok := newTask(PriorityNormal, func(context.Context, float64) bool { return true })
+	accepted := false
+	ok.Submitted = func(v bool) { accepted = v }
+	s.Submit(ok)
+	if !accepted {
+		t.Fatal("入队成功时 Submitted 应回调 accepted=true")
+	}
+
+	// 队列已满（cap=1 且被 normal 占满），低优先级新任务应被拒且同步回调 false
+	rejected := true
+	low := newTask(PriorityLow, func(context.Context, float64) bool { return true })
+	low.Submitted = func(v bool) { rejected = v }
+	s.Submit(low)
+	if rejected {
+		t.Fatal("提交被拒时 Submitted 应回调 accepted=false")
+	}
+
+	close(gate)
+}
+
 func TestTTLForAndCanInterrupt(t *testing.T) {
 	text, gift := 10*time.Second, 60*time.Second
 	if got := TTLFor(PriorityNormal, text, gift); got != text {

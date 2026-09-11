@@ -8,42 +8,17 @@
                               └─ POST :12393/inject → LLM-Vup TTS 引擎
 ```
 
-自带一个**免构建的调试台**（<http://localhost:9528/debug>），可脱离 LLM-Vup 单独使用：
-
-- **提交事件**，验证优先级队列、串行播报、超时丢弃、积压加速
-- **切换模型**（DeepSeek / OpenCode Go / OpenAI），保存即生效，不用重启
-- **配置 Mimo 并试听**：每段音频一个原生播放器，可拖动进度条
-- 查看每条事件的**结果、耗时、情绪、回复文本与音频**，以及配置加载诊断
-
 ## 组成
 
 | 部分 | 技术 | 说明 |
 |---|---|---|
 | `bridge/` | Python | `/inject` 注入服务，挂载到 LLM-Vup 的 FastAPI |
-| `cmd/distillery` | Go | 事件管线：弹幕/礼物 → LLM 分析 → 调度 → TTS；内置调试台 |
-| `internal/debugui/` | Go + 单页 HTML | 调试台（`go:embed`，无前端构建、无外部依赖） |
+| `cmd/distillery` | Go | 事件管线：弹幕/礼物 → LLM 分析 → 调度 → TTS |
 | `internal/tts/mimo.go` | Go | Mimo TTS 直连客户端，含完整情绪智能 |
-| `internal/tts/mimo_config.go` | Go | Mimo 试听配置的读写与落盘 |
-| `internal/dispatch/` | Go | 发言调度、优先级队列、冷却、礼物/SC 模板 |
+| `internal/dispatch/` | Go | 发言调度、冷却、礼物/SC 模板 |
 | `internal/emotion/` | Go | 情绪→语音参数映射 |
-| `internal/llm/` | Go | LLM 分析客户端（可运行时切换服务商） |
-| `internal/provider/` | Go | 服务商预设（DeepSeek / OpenCode Go / OpenAI）与接口类型识别 |
+| `internal/llm/` | Go | LLM 分析客户端 |
 | `prompts/` | 文本 | LLM 分析 prompt（运行时加载） |
-
-## 密钥与文件安全
-
-含密钥的文件**已被 .gitignore 覆盖，不要提交**：
-
-| 文件 | 内容 | 保存方式 |
-|---|---|---|
-| `config.json` | 主配置（可含 `mimo.api_key`） | 手写 / 参考 `config.example.json` |
-| `model_config.json` | 模型配置（含 `llm.api_key`） | 调试台「模型配置」自动写入，0600 |
-| `mimo_config.json` | 试听配置（含 `mimo.api_key`） | 调试台「Mimo TTS 配置」自动写入，0600 |
-
-- 调试台**只回显密钥掩码**（`********1234`），不回传明文；备份 `*.bak` / `*.bak.json` 也已被忽略。
-- 想提交模板时，用同名的 `*.example.json`（占位符形式，不含真实 Key）。
-- 一旦密钥可能外泄（贴进聊天、日志、截图），请到服务商控制台**轮换**——本项目不做任何形式的密钥回收。
-
 
 ## 快速开始
 
@@ -66,16 +41,9 @@ sudo LLM_VUP_ROOT=$(pwd) uv run python ./bridge/serve.py --verbose
 
 ```bash
 cd llm-vup-bridge
-cp config.example.json config.json   # 可选；不配也能启动，用内置默认值
-go build -o distillery ./cmd/distillery && ./distillery   # 与其它仓库一致的构建方式
-# 打开 http://localhost:9528/debug —— 模型、Mimo 试听都可在网页里配，无需手写 JSON
+cp config.example.json config.json   # 编辑 config.json
+CGO_ENABLED=0 go run ./cmd/distillery/
 ```
-
-### 只想调试（不需要 LLM-Vup / LLM-Vup 的 TTS）
-
-distillery 单独就能跑：`go build -o distillery ./cmd/distillery && ./distillery`，然后开 `/debug`。
-在网页里填 Mimo Key 即可试听全部情绪与音色；没配 LLM Key 时礼物/SC/舰长走纯模板，链路照样能验。
-详见下方「脱离主项目独立调试」。
 
 ## 配置
 
@@ -91,8 +59,7 @@ distillery 单独就能跑：`go build -o distillery ./cmd/distillery && ./disti
     "base_url": "https://api.xiaomimimo.com/v1",
     "model": "mimo-v2.5-tts",
     "voice": "冰糖",                              // 冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean
-    "format": "mp3",
-    "cache_dir": "cache"                         // 可选；默认 config.json 同级的 cache/
+    "format": "mp3"
   },
   "llm": {
     "endpoint": "https://api.openai.com/v1",
@@ -102,12 +69,7 @@ distillery 单独就能跑：`go build -o distillery ./cmd/distillery && ./disti
   "speech": {
     "cooldown_sec": 5,
     "gift_bypass_cooldown": true,
-    "reply_chance": { "chat": 0.6, "greeting": 0.8, "question": 0.95, "command": 0.9, "gift_thanks": 1.0 },
-    "ttl_text_sec": 10,          // 普通消息排队时限（秒），超时丢弃
-    "ttl_gift_sec": 60,          // 礼物/SC/舰长排队时限（秒）
-    "queue_max_size": 64,        // 队列容量，0=不限
-    "backlog_threshold": 3,      // 积压加速阈值，0=禁用
-    "backlog_speed_boost": 0.15  // 积压加速量
+    "reply_chance": { "chat": 0.6, "greeting": 0.8, "question": 0.95, "command": 0.9, "gift_thanks": 1.0 }
   }
 }
 ```

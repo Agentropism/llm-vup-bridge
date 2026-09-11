@@ -1,0 +1,9 @@
+{
+  "mimo": {
+    "api_key": "sk-在此填入你的key",
+    "base_url": "https://api.xiaomimimo.com/v1",
+    "model": "mimo-v2.5-tts",
+    "voice": "冰糖",
+    "format": "mp3"
+  }
+}

@@ -17,12 +17,12 @@ import (
 
 // MimoConfig MiMo TTS 配置
 type MimoConfig struct {
-	APIKey     string // sk-xxxxx
-	BaseURL    string // https://api.xiaomimimo.com/v1
-	Model      string // mimo-v2.5-tts
-	Voice      string // 冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean/mimo_default
-	Format     string // mp3 / wav
-	CacheDir   string // 缓存音频文件目录
+	APIKey   string // sk-xxxxx
+	BaseURL  string // https://api.xiaomimimo.com/v1
+	Model    string // mimo-v2.5-tts
+	Voice    string // 冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean/mimo_default
+	Format   string // mp3 / wav
+	CacheDir string // 缓存音频文件目录
 }
 
 // DefaultMimoConfig 默认 Mimo TTS 配置
@@ -35,6 +35,9 @@ func DefaultMimoConfig() MimoConfig {
 		CacheDir: "cache",
 	}
 }
+
+// Voices 已知可用音色（供调试台下拉选择；实际可用范围以 MiMo 服务端为准）。
+var Voices = []string{"冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"}
 
 // EmotionProfile 情绪对应的 Mimo 参数
 type EmotionProfile struct {
@@ -122,25 +125,58 @@ func (m *MimoClient) ParseEmotion(text string) (context string, speed float64, m
 
 // GenerateAudio 生成音频文件，返回文件路径。
 func (m *MimoClient) GenerateAudio(ctx context.Context, text, filePrefix string) (string, error) {
-	return m.generateAudio(ctx, text, filePrefix, 0)
+	return m.generateAudio(ctx, text, filePrefix, 0, MimoOptions{})
 }
 
 // GenerateAudioBoost 生成音频文件；queueBoost>0 时在情绪基准语速上额外加速（积压加速）。
 func (m *MimoClient) GenerateAudioBoost(ctx context.Context, text, filePrefix string, queueBoost float64) (string, error) {
-	return m.generateAudio(ctx, text, filePrefix, queueBoost)
+	return m.generateAudio(ctx, text, filePrefix, queueBoost, MimoOptions{})
 }
 
-func (m *MimoClient) generateAudio(ctx context.Context, text, filePrefix string, queueBoost float64) (string, error) {
+// GenerateAudioWith 生成音频文件，并允许单次覆盖音色/格式/语速（试听用，不改动全局配置）。
+func (m *MimoClient) GenerateAudioWith(ctx context.Context, text, filePrefix string, opts MimoOptions) (string, error) {
+	return m.generateAudio(ctx, text, filePrefix, 0, opts)
+}
+
+// CacheDir 返回音频缓存目录（供调试台挂载试听端点）。
+func (m *MimoClient) CacheDir() string { return m.cfg.CacheDir }
+
+// Format 返回当前音频格式（mp3/wav）。
+func (m *MimoClient) Format() string { return m.cfg.Format }
+
+// Voice 返回当前音色。
+func (m *MimoClient) Voice() string { return m.cfg.Voice }
+
+// MimoOptions 单次生成的覆盖项；零值表示沿用全局配置。
+type MimoOptions struct {
+	Voice  string  // 覆盖音色
+	Format string  // 覆盖格式（mp3/wav）
+	Speed  float64 // 直接指定语速（覆盖情绪推导值）
+}
+
+func (m *MimoClient) generateAudio(ctx context.Context, text, filePrefix string, queueBoost float64, opts MimoOptions) (string, error) {
 	emoCtx, speed, mimoEmo, boostText := m.ParseEmotion(text)
 	ttsText := text
 	if boostText != "" {
 		ttsText = strings.TrimSpace(text + boostText)
 	}
 	speed += queueBoost
+	if opts.Speed > 0 {
+		speed = opts.Speed
+	}
+
+	voice := m.cfg.Voice
+	if opts.Voice != "" {
+		voice = opts.Voice
+	}
+	format := m.cfg.Format
+	if opts.Format != "" {
+		format = opts.Format
+	}
 
 	audioParams := map[string]any{
-		"voice":  m.cfg.Voice,
-		"format": m.cfg.Format,
+		"voice":  voice,
+		"format": format,
 	}
 	if mimoEmo != "" && mimoEmo != "default" {
 		audioParams["emotion"] = mimoEmo
@@ -215,7 +251,7 @@ func (m *MimoClient) generateAudio(ctx context.Context, text, filePrefix string,
 		return "", fmt.Errorf("mimo: base64 decode: %w", err)
 	}
 
-	filename := fmt.Sprintf("mimo_%s_%d.%s", filePrefix, time.Now().UnixNano(), m.cfg.Format)
+	filename := fmt.Sprintf("mimo_%s_%d.%s", filePrefix, time.Now().UnixNano(), format)
 	filePath := filepath.Join(m.cfg.CacheDir, filename)
 	if err := os.WriteFile(filePath, audioBytes, 0644); err != nil {
 		return "", fmt.Errorf("mimo: write file: %w", err)

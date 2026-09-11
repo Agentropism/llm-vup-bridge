@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>distillery 调试台</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --line:#2a2f3d;
+    --fg:#e6e9ef; --dim:#8b93a7; --accent:#7c9cff; --ok:#4ec9a5; --warn:#e0b34a; --err:#e26d6d;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif}
+  a{color:var(--accent)}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:15px;font-weight:600}
+  .tag{font:11px/1.6 var(--mono);padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--dim)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
+  .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;padding:12px 16px 40px;align-items:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .card>h2{margin:0;padding:9px 12px;font-size:13px;font-weight:600;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .card .body{padding:12px}
+  .wide{grid-column:1/-1}
+  label{display:block;color:var(--dim);font-size:12px;margin:0 0 3px}
+  input,select,textarea,button{font:inherit;color:var(--fg);background:#11141c;border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+  textarea{resize:vertical;min-height:56px;font-family:var(--mono);font-size:12px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  button{background:var(--accent);border-color:var(--accent);color:#0b0e14;font-weight:600;cursor:pointer;width:auto;padding:6px 14px}
+  button:hover{filter:brightness(1.1)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:transparent;color:var(--fg);border-color:var(--line);font-weight:400}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .field{margin-bottom:8px}
+  .actions{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .hint{color:var(--dim);font-size:11px}
+  pre{margin:0;background:#0b0e14;border:1px solid var(--line);border-radius:6px;padding:8px;font:11.5px/1.5 var(--mono);max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:500;font-size:11px;position:sticky;top:0;background:var(--panel)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#1b1f2a}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font:12px/1.7 var(--mono)}
+  .kv b{color:var(--dim);font-weight:400}
+  .pill{font:11px/1.6 var(--mono);padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+  .pill.p0{color:#9aa3b8} .pill.p1{color:#7fb2ff;border-color:#2b476e}
+  .pill.p2{color:#59c6ff;border-color:#20505f} .pill.p3{color:var(--warn);border-color:#5a4a1e}
+  .pill.p4{color:#e08bd0;border-color:#5c3352} .pill.p5{color:var(--err);border-color:#5e2b2b}
+  .r-spoken{color:var(--ok)} .r-skipped{color:var(--dim)} .r-error{color:var(--err)}
+  .hint.ok{color:var(--ok)} .hint.err{color:var(--err)} .hint.warn{color:var(--warn)}
+  .banner{grid-column:1/-1;padding:10px 14px;border-radius:8px;border:1px solid var(--line);line-height:1.7}
+  .banner.err{background:#2a1618;border-color:#5e2b2b;color:#f0c9c9}
+  .banner.warn{background:#2a2416;border-color:#5a4a1e;color:#f0e0b8}
+  .banner.info{background:#16202a;border-color:#2b476e;color:#c9dcf0}
+  .banner b{color:#fff}
+  .banner .hint{color:inherit;opacity:.75}
+  .scroll{max-height:320px;overflow:auto}
+  code{font-family:var(--mono);font-size:11.5px;color:#c9d1e4}
+  button.mini{width:auto;padding:0 7px;font:11px/1.9 var(--mono);background:#232a3a;border-color:#33405c;color:var(--fg);font-weight:400;border-radius:5px}
+  button.mini:hover{background:#2d3648}
+  .clip{display:flex;align-items:center;gap:6px;margin:3px 0}
+  .clip audio{height:30px;max-width:280px;flex:0 1 auto}
+  .clip a{font:11px/1.6 var(--mono);color:var(--dim);text-decoration:none;border-bottom:1px dotted var(--line);white-space:nowrap}
+  .clip a:hover{color:var(--accent)}
+  audio{height:32px}
+</style>
+</head>
+<body>
+<header>
+  <h1>distillery 调试台</h1>
+  <span class="tag" id="addr">:9528</span>
+  <span class="tag"><span class="dot" id="healthDot"></span> <span id="healthText">检测中</span></span>
+  <span class="tag" id="ttsPath">TTS: —</span>
+  <span class="tag" id="llmInfo">LLM: —</span>
+  <span style="flex:1"></span>
+  <button class="ghost" id="refreshBtn">刷新</button>
+</header>
+
+<main>
+  <div id="cfgBanner" class="banner" style="display:none"></div>
+  <!-- 运行状态 -->
+  <section class="card">
+    <h2>运行状态 <span class="hint" id="logCount"></span></h2>
+    <div class="body"><div class="kv" id="statusKv"><b>加载中</b><span></span></div></div>
+  </section>
+
+  <!-- 优先级与情绪参考 -->
+  <section class="card">
+    <h2>优先级 / 情绪参考</h2>
+    <div class="body" style="padding-top:0">
+      <table>
+        <thead><tr><th>类型</th><th>优先级</th><th>可打断</th><th>队列时限</th></tr></thead>
+        <tbody id="priTbl"></tbody>
+      </table>
+      <div class="hint" style="margin:8px 0 4px">情绪 → synapse-tts 参数（Mimo 路径改走 emotion 标签与 speed）</div>
+      <table>
+        <thead><tr><th>情绪</th><th>Rate</th><th>Pitch</th><th>Volume</th></tr></thead>
+        <tbody id="emoTbl"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 模型配置 -->
+  <section class="card wide">
+    <h2>模型配置 <span class="hint">保存后立即生效，无需重启 · POST /debug/model</span></h2>
+    <div class="body">
+      <div class="row3">
+        <div class="field"><label>服务商 provider</label><select id="pProvider"></select></div>
+        <div class="field"><label>模型 model</label>
+          <input id="pModel" list="pModels" placeholder="选择或直接输入模型名">
+          <datalist id="pModels"></datalist>
+        </div>
+        <div class="field"><label>API Key</label><input id="pKey" type="password" placeholder="粘贴 API Key"></div>
+      </div>
+      <div class="field" id="pKeepWrap" style="display:none">
+        <label style="display:flex;gap:6px;align-items:center;width:auto">
+          <input type="checkbox" id="pKeep" style="width:auto">
+          <span>沿用已保存的 Key（<span id="pKeepMask"></span>）——仅当服务商与地址未变时勾选</span>
+        </label>
+      </div>
+      <div class="field"><label>接口地址 endpoint（OpenAI 兼容 base URL，不含 /chat/completions）</label>
+        <input id="pEndpoint" placeholder="https://api.deepseek.com/v1"></div>
+      <div class="actions">
+        <button id="pSave">保存并启用</button>
+        <button class="ghost" id="pTest">测试连接</button>
+        <span class="hint" id="pState"></span>
+      </div>
+      <div class="field" style="margin-top:8px"><label>保存位置（含密钥，权限 0600；不可写则无法持久化）</label>
+        <input id="pPersist" readonly style="font-family:var(--mono);font-size:11.5px;color:var(--dim)"></div>
+      <div class="field" id="pMisconfig" style="display:none"></div>
+      <pre id="pOut" style="margin-top:10px">—</pre>
+    </div>
+  </section>
+
+  <!-- 队列提交 -->
+  <section class="card">
+    <h2>队列提交 <span class="hint">POST /event → 优先级队列</span></h2>
+    <div class="body">
+      <div class="row">
+        <div class="field"><label>平台 platform</label>
+          <select id="qPlatform"><option>test</option><option>bilibili</option><option>qq</option></select></div>
+        <div class="field"><label>消息类型 message_type</label>
+          <select id="qType"></select></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>用户名 user_name</label><input id="qUser" value="测试用户"></div>
+        <div class="field"><label>群/房间 group_id</label><input id="qGroup" placeholder="可空"></div>
+      </div>
+      <div class="field"><label>内容 content</label><textarea id="qContent" placeholder="弹幕内容 / 礼物名（火箭、飞船…）/ SC 内容"></textarea></div>
+      <div class="actions">
+        <button id="qSend">入队</button>
+        <button class="ghost" id="qBurst">连发 5 条</button>
+        <span class="hint">异步：置顶结果面板按序显示，用于验证串行播报 / 插队 / 超时丢弃</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 同步测试 -->
+  <section class="card">
+    <h2>同步测试 <span class="hint">POST /test → 不经队列</span></h2>
+    <div class="body">
+      <div class="row">
+        <div class="field"><label>用户名 user</label><input id="tUser" value="测试用户"></div>
+        <div class="field"><label>类型 type</label><select id="tType"></select></div>
+      </div>
+      <div class="field"><label>文本 text</label><textarea id="tText" placeholder="你好呀 / 火箭 / 主播今天讲的什么？"></textarea></div>
+      <div class="actions">
+        <button id="tSend">发送</button>
+        <span class="hint">走完整 LLM/模板链路并等待结果</span>
+      </div>
+      <pre id="tOut" style="margin-top:10px">—</pre>
+    </div>
+  </section>
+
+  <!-- Mimo TTS 配置 -->
+  <section class="card" id="mimoCfgCard">
+    <h2>Mimo TTS 配置 <span class="hint">保存到 mimo_config.json · 需重启生效</span></h2>
+    <div class="body">
+      <div id="mimoState" class="hint" style="margin-bottom:8px">—</div>
+      <div class="field"><label>API Key</label><input id="mcKey" type="password" placeholder="粘贴 Mimo API Key"></div>
+      <div class="row">
+        <div class="field"><label>音色 voice</label><select id="mcVoice"></select></div>
+        <div class="field"><label>格式 format</label><select id="mcFormat">
+          <option value="mp3">mp3</option><option value="wav">wav</option></select></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>接口地址 base_url</label><input id="mcBase" placeholder="https://api.xiaomimimo.com/v1"></div>
+        <div class="field"><label>模型 model</label><input id="mcModel" placeholder="mimo-v2.5-tts"></div>
+      </div>
+      <div class="actions">
+        <button id="mcSave">保存</button>
+        <span class="hint">填好即落入 <code id="mcPath">mimo_config.json</code>，重启 distillery 后试听即可用</span>
+      </div>
+      <pre id="mcOut" style="margin-top:10px">—</pre>
+    </div>
+  </section>
+
+  <!-- Mimo TTS -->
+  <section class="card">
+    <h2>Mimo TTS 试听 <span class="hint">POST /tts/mimo</span></h2>
+    <div class="body">
+      <div class="field"><label>文本 text</label><textarea id="mText" placeholder="喂你这个笨蛋！"></textarea></div>
+      <div class="row">
+        <div class="field"><label>情绪 emotion</label><select id="mEmo"><option value="">（不指定）</option></select></div>
+        <div class="field"><label>音色 voice（默认取配置）</label><select id="mVoice"></select></div>
+      </div>
+      <div class="row3">
+        <div class="field"><label>语速 speed</label><input id="mSpeed" type="number" step="0.05" placeholder="留空=情绪默认"></div>
+        <div class="field"><label>格式 format</label><select id="mFormat">
+          <option value="">（默认）</option><option value="mp3">mp3</option><option value="wav">wav</option></select></div>
+        <div class="field"><label>&nbsp;</label><button id="mSend" style="width:100%">生成</button></div>
+      </div>
+      <div id="mPlayer" style="display:none;margin-top:10px">
+        <audio id="mAudio" controls preload="none" style="width:100%"></audio>
+        <div class="hint" style="margin-top:4px">
+          <a id="mDownload" download>下载</a> · <span id="mPath"></span>
+        </div>
+      </div>
+      <pre id="mOut" style="margin-top:10px">未配置 mimo.api_key 时本面板不可用（返回 400）</pre>
+    </div>
+  </section>
+
+  <!-- 最近事件 -->
+  <section class="card wide">
+    <h2>最近事件 <span class="hint" id="autoHint">每 2s 自动刷新</span>
+      <label class="hint" style="margin:0;display:flex;gap:5px;align-items:center;width:auto">
+        <input type="checkbox" id="autoChk" checked style="width:auto"> 自动刷新</label>
+    </h2>
+    <div class="body" style="padding:0">
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th style="width:34px">#</th><th style="width:66px">时间</th><th style="width:60px">平台</th>
+            <th style="width:90px">用户</th><th style="width:74px">类型</th><th style="width:70px">优先级</th>
+            <th style="width:82px">结果</th><th style="width:56px">耗时</th><th>回复 / 说明 / 试听</th>
+          </tr></thead>
+          <tbody id="logTbl"><tr><td colspan="9" class="hint">暂无记录</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+'use strict';
+// 编译期常量（与 internal/dispatch、internal/emotion 对齐）
+var PRIORITIES = [
+  {v:0, key:'',          zh:'低（未知）', tip:'未识别的 message_type'},
+  {v:1, key:'text',      zh:'普通弹幕',   ttl:'ttl_text_sec'},
+  {v:2, key:'',          zh:'高（提问/@）', tip:'由 LLM intent 决定，非入站类型'},
+  {v:3, key:'gift',      zh:'礼物',       ttl:'ttl_gift_sec'},
+  {v:4, key:'super_chat',zh:'SuperChat',  ttl:'ttl_gift_sec'},
+  {v:5, key:'captain',   zh:'舰长',       ttl:'ttl_gift_sec'}
+];
+var EMOTIONS = [
+  {name:'joy',       rate:25,  pitch:35,  vol:15},
+  {name:'surprise',  rate:30,  pitch:50,  vol:20},
+  {name:'smirk',     rate:8,   pitch:15,  vol:-10},
+  {name:'sadness',   rate:-25, pitch:-30, vol:-10},
+  {name:'anger',     rate:35,  pitch:-5,  vol:25},
+  {name:'fear',      rate:40,  pitch:45,  vol:-5},
+  {name:'disgust',   rate:15,  pitch:-10, vol:10},
+  {name:'neutral',   rate:0,   pitch:0,   vol:0}
+];
+var TYPES = [
+  {v:'text',       zh:'text 普通弹幕'},
+  {v:'gift',       zh:'gift 礼物'},
+  {v:'super_chat', zh:'super_chat SC'},
+  {v:'captain',    zh:'captain 舰长'}
+];
+var REASON_ZH = {
+  spoken:'已发声', skipped:'跳过', tts_error:'TTS失败', llm_error:'LLM失败',
+  timeout:'超时丢弃', queue_full:'队列满', evicted:'被淘汰', closed:'已关闭', interrupted:'被打断'
+};
+
+var $ = function(id){ return document.getElementById(id); };
+var inFlight = {};      // seq -> 提交时刻，用于前端计时
+var watchSeq = 0;       // 最近一次提交的 seq，用于高亮
+var cfg = null;
+
+// 表格里是否有音频正在播放：播放时暂停自动刷新，避免重建 DOM 打断播放
+function anyClipPlaying(){
+  var list = document.querySelectorAll('#logTbl audio');
+  for (var i = 0; i < list.length; i++){
+    if (!list[i].paused && !list[i].ended) return true;
+  }
+  return false;
+}
+
+// 同一时刻只允许一段音频播放：播放新的就暂停其它
+function soloPlayback(){
+  var tb = $('logTbl');
+  tb.addEventListener('play', function(ev){
+    if (ev.target.tagName !== 'AUDIO') return;
+    Array.prototype.forEach.call(tb.querySelectorAll('audio'), function(a){
+      if (a !== ev.target && !a.paused) a.pause();
+    });
+  }, true);   // capture：play 事件不冒泡
+}
+
+function fillSelects(){
+  var q = $('qType'), t = $('tType'), m = $('mEmo');
+  TYPES.forEach(function(x){
+    q.appendChild(new Option(x.zh, x.v));
+    t.appendChild(new Option(x.zh, x.v));
+  });
+  m.appendChild(new Option('（随机 smirk）','smirk'));
+  EMOTIONS.forEach(function(e){ m.appendChild(new Option(e.name, e.name)); });
+  m.value = 'smirk';
+
+  var pb = $('priTbl');
+  PRIORITIES.forEach(function(p){
+    var tr = document.createElement('tr');
+    var ttl = p.ttl ? p.ttl : (p.tip ? '—' : '—');
+    tr.innerHTML = '<td><code>' + (p.key || p.zh) + '</code></td>' +
+      '<td><span class="pill p' + p.v + '">' + p.v + '</span></td>' +
+      '<td>' + (p.v >= 3 ? '否' : '是') + '</td><td class="hint">' + ttl + '</td>';
+    pb.appendChild(tr);
+  });
+
+  var eb = $('emoTbl');
+  EMOTIONS.forEach(function(e){
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td><code>' + e.name + '</code></td><td>' + fmt(e.rate,'%') +
+      '</td><td>' + fmt(e.pitch,'Hz') + '</td><td>' + fmt(e.vol,'%') + '</td>';
+    eb.appendChild(tr);
+  });
+}
+function fmt(v, unit){ return (v > 0 ? '+' : '') + v + unit; }
+
+function loadConfig(){
+  return fetch('/debug/config').then(function(r){ return r.json(); }).then(function(c){
+    cfg = c;
+    $('addr').textContent = c.listen_addr;
+    $('ttsPath').textContent = 'TTS: ' + c.tts_path;
+    $('llmInfo').textContent = 'LLM: ' + (c.llm_model || '—');
+    var s = c.speech || {}, q = c.queue || {};
+    // 配置加载异常横幅：配置没生效时，任何"功能坏了"的第一嫌疑都是配置
+    var banner = $('cfgBanner');
+    if (c.config_parse_error && !c.config_found){
+      banner.className = 'banner err';
+      banner.innerHTML = '<b>✖ 配置文件读取失败</b> ' + esc(c.config_path) + '<br>' + esc(c.config_parse_error);
+      banner.style.display = 'block';
+    } else if (c.config_parse_error){
+      banner.className = 'banner err';
+      banner.innerHTML = '<b>✖ ' + esc(c.config_path) + ' 的 JSON 解析失败</b>，配置<strong>完全没有生效</strong>，' +
+        '当前用的是内置默认值（所以 Mimo/端口等设置都不是你写的）。<br>' + esc(c.config_parse_error) +
+        '<br><span class="hint">常见原因：多余逗号、缺引号、JSON 里写了注释。校验：python3 -m json.tool config.json</span>';
+      banner.style.display = 'block';
+    } else if (!c.config_found){
+      banner.className = 'banner warn';
+      banner.innerHTML = '<b>⚠ 未找到配置文件</b> ' + esc(c.config_path) +
+        '，当前使用内置默认值：<strong>Mimo 未配置 → 没有音频缓存 → 试听不可用、普通消息无模型</strong>。' +
+        '<br><span class="hint">在该路径放 config.json，或用 --config /绝对/路径/config.json 启动；也可直接在下方「模型配置」里配置模型。</span>';
+      banner.style.display = 'block';
+    } else if ((c.config_env_applied || []).length){
+      banner.className = 'banner info';
+      banner.innerHTML = '<b>环境变量覆盖已生效</b>：' + esc(c.config_env_applied.join(', ')) +
+        '<br><span class="hint">环境变量优先于 config.json，看到的可能不是你写在文件里的值。</span>';
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+    var kv = [
+      ['配置文件', (c.config_found ? '✔ ' : '✖ ') + (c.config_path || '—') +
+                   (c.config_used_default ? '（未生效，用默认值）' : '')],
+      ['TTS 路径', c.tts_path + (c.mimo_configured ? '（Mimo 直连已配置，可试听）' : '（未配置 Mimo，试听不可用）')],
+      ['synapse-tts', c.tts_addr || '—'],
+      ['/inject 注入', c.vtuber_addr || 'disabled'],
+      ['音频缓存', c.audio_available ? c.audio_dir : '未启用（需配置 mimo.api_key）'],
+      ['LLM', (c.llm_provider || 'custom') + ' · ' + (c.llm_model || '—') +
+              (c.llm_configured ? '' : '（未配置，普通消息不可用）')],
+      ['冷却', (s.cooldown_sec || 0) + 's' + (s.gift_bypass_cooldown ? '（礼物/SC/舰长无视）' : '')],
+      ['队列容量', q.max_size ? q.max_size : '不限'],
+      ['排队时限', '普通 ' + (q.ttl_text_sec||0) + 's / 礼物 ' + (q.ttl_gift_sec||0) + 's'],
+      ['积压加速', (q.backlog_threshold||0) + ' 条起 +' + (q.backlog_speed_boost||0)],
+      ['回复概率', Object.keys(s.reply_chance||{}).map(function(k){
+        return k + '=' + s.reply_chance[k]; }).join('  ') || '—'],
+      ['可选情绪', EMOTIONS.map(function(e){ return e.name; }).join(' ')]
+    ];
+    $('statusKv').innerHTML = kv.map(function(p){
+      return '<b>' + p[0] + '</b><span>' + p[1] + '</span>';
+    }).join('');
+
+    // 音色下拉：默认项标注当前配置；不可用时禁用整个面板
+    var mv = $('mVoice');
+    mv.innerHTML = '';
+    var voices = c.mimo_voices || [];
+    if (c.mimo_configured){
+      mv.appendChild(new Option('（默认 ' + (c.mimo_voice||'') + '）',''));
+      voices.forEach(function(v){ mv.appendChild(new Option(v, v)); });
+      mv.disabled = false;
+      $('mSend').disabled = false;
+    } else {
+      mv.appendChild(new Option('未配置 mimo.api_key',''));
+      mv.disabled = true;
+      $('mSend').disabled = true;
+      $('mOut').textContent = '未配置 mimo.api_key，无法生成音频。\n在 config.json 填入 mimo.api_key 后重启 distillery 即可（无需 LLM-Vup / LLM key）。';
+    }
+    return c;
+  }).catch(function(e){
+    $('statusKv').innerHTML = '<b>配置读取失败</b><span>' + e + '</span>';
+  });
+}
+
+function ping(){
+  fetch('/health').then(function(r){ return r.json(); }).then(function(){
+    $('healthDot').className = 'dot ok'; $('healthText').textContent = 'healthy';
+  }).catch(function(){
+    $('healthDot').className = 'dot err'; $('healthText').textContent = 'unreachable';
+  });
+}
+
+function submit(btn){
+  var body = {
+    platform: $('qPlatform').value,
+    user_name: $('qUser').value,
+    group_id: $('qGroup').value,
+    content: $('qContent').value,
+    message_type: $('qType').value
+  };
+  btn.disabled = true;
+  fetch('/debug/queue', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if (d.seq) { inFlight[d.seq] = Date.now(); watchSeq = d.seq; }
+    loadLog();
+  }).catch(function(e){ alert('提交失败: ' + e); })
+    .then(function(){ btn.disabled = false; });
+}
+
+function syncTest(){
+  var btn = $('tSend'); btn.disabled = true;
+  $('tOut').textContent = '请求中…';
+  fetch('/test', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      text: $('tText').value, user: $('tUser').value, type: $('tType').value
+    })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    $('tOut').textContent = JSON.stringify(d, null, 2);
+  }).catch(function(e){ $('tOut').textContent = '失败: ' + e; })
+    .then(function(){ btn.disabled = false; loadLog(); });
+}
+
+function mimoTest(){
+  var btn = $('mSend'); btn.disabled = true;
+  $('mOut').textContent = '生成中…';
+  $('mPlayer').style.display = 'none';
+  var body = { text: $('mText').value, emotion: $('mEmo').value };
+  var sp = parseFloat($('mSpeed').value);
+  if (!isNaN(sp)) body.speed = sp;
+  if ($('mVoice').value) body.voice = $('mVoice').value;
+  if ($('mFormat').value) body.format = $('mFormat').value;
+  fetch('/tts/mimo', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  }).then(function(r){ return r.json(); }).then(function(d){
+    $('mOut').textContent = JSON.stringify(d, null, 2);
+    if (d.url){
+      $('mPlayer').style.display = 'block';
+      var a = $('mAudio');
+      a.src = d.url;
+      $('mDownload').href = d.url;
+      $('mPath').textContent = d.file || d.audio || '';
+      a.play().catch(function(){ /* 浏览器可能要求先交互，用户点播放即可 */ });
+    }
+  }).catch(function(e){ $('mOut').textContent = '失败: ' + e; })
+    .then(function(){ btn.disabled = false; });
+}
+
+function cls(reason){
+  if (reason === 'spoken') return 'r-spoken';
+  if (reason === 'tts_error' || reason === 'llm_error') return 'r-error';
+  return 'r-skipped';
+}
+
+function loadLog(){
+  return fetch('/debug/log?n=50').then(function(r){ return r.json(); }).then(function(d){
+    var rows = d.entries || [];
+    $('logCount').textContent = '共 ' + d.total + ' 条记录';
+    var tb = $('logTbl');
+    if (!rows.length){ tb.innerHTML = '<tr><td colspan="9" class="hint">暂无记录</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(e){
+      var t = new Date(e.at);
+      var hh = String(t.getHours()).padStart(2,'0') + ':' +
+               String(t.getMinutes()).padStart(2,'0') + ':' +
+               String(t.getSeconds()).padStart(2,'0');
+      var hl = (e.seq === watchSeq) ? ' style="background:#20263a"' : '';
+      var detail = e.reply_text || e.detail || '';
+      if (e.spoken_text && e.spoken_text !== e.reply_text) detail += '  ⟨播报: ' + e.spoken_text + '⟩';
+      var meta = [];
+      if (e.intent_type) meta.push('intent=' + e.intent_type);
+      if (e.emotion) meta.push('emo=' + e.emotion);
+      if (e.boost) meta.push('boost=+' + e.boost);
+      if (e.wait_ms) meta.push('排队' + e.wait_ms + 'ms');
+      var cost = e.cost_ms ? e.cost_ms + 'ms' : (e.queued === false ? '—' : '…');
+      // 试听：每段音频一个原生播放器（自带进度条/音量/暂停），状态由浏览器维护，不依赖 JS 变量
+      var clips = '';
+      (e.audio_urls || []).forEach(function(u, i){
+        var name = (e.audio || [])[i] || ('clip' + (i+1));
+        clips += '<div class="clip">' +
+          '<audio controls preload="none" src="' + esc(u) + '"></audio>' +
+          '<a href="' + esc(u) + '" download="' + esc(name) + '" title="' + esc(name) + '">' +
+            esc(short(name)) + '</a>' +
+          '</div>';
+      });
+      if (e.tts_error) meta.push('TTS错误: ' + e.tts_error);
+      return '<tr' + hl + '>' +
+        '<td class="hint">' + e.seq + '</td>' +
+        '<td class="hint">' + hh + '</td>' +
+        '<td>' + esc(e.platform || '—') + '</td>' +
+        '<td>' + esc(e.user || '—') + '</td>' +
+        '<td><code>' + esc(e.message_type) + '</code></td>' +
+        '<td><span class="pill p' + e.priority + '" title="' + esc(e.priority_zh) + '">' +
+          e.priority + '</span></td>' +
+        '<td class="' + cls(e.reason) + '">' + (REASON_ZH[e.reason] || e.reason) + '</td>' +
+        '<td class="hint">' + cost + '</td>' +
+        '<td>' + esc(detail) + (clips ? '<div>' + clips + '</div>' : '') +
+          (meta.length ? '<div class="hint">' + esc(meta.join(' | ')) + '</div>' : '') +
+        '</td></tr>';
+    }).join('');
+  }).catch(function(){ /* 忽略瞬时错误 */ });
+}
+function short(name){
+  // mimo_speech_1730000000000000000.mp3 → mimo_speech_…000.mp3
+  var m = /^(mimo_[a-z_]+)_(\d+)\.(\w+)$/.exec(name);
+  return m ? (m[1] + '…' + m[2].slice(-3) + '.' + m[3]) : name;
+}
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];
+  });
+}
+
+// ── 模型配置 ──
+var providers = [];       // 服务商预设
+var modelState = null;    // 当前生效配置（含 Key 掩码）
+
+function loadProviders(){
+  return fetch('/debug/providers').then(function(r){ return r.json(); }).then(function(d){
+    providers = d.providers || [];
+    modelState = d.current || null;
+    applyModelState();
+    return d;
+  }).catch(function(e){
+    $('pState').textContent = '读取失败: ' + e;
+  });
+}
+
+function applyModelState(){
+  var sel = $('pProvider');
+  sel.innerHTML = '';
+  providers.forEach(function(p){ sel.appendChild(new Option(p.Name, p.key)); });
+  sel.appendChild(new Option('自定义（手动填 endpoint）','custom'));
+
+  var cur = modelState || {};
+  sel.value = cur.provider || 'custom';
+  $('pEndpoint').value = cur.endpoint || '';
+  $('pModel').value = cur.model || '';
+  fillModelList(sel.value, cur.model);
+
+  var st = [];
+  if (cur.configured){
+    st.push('已配置：' + (cur.model || '?'));
+    if (cur.api_key_masked) st.push('Key ' + cur.api_key_masked);
+  } else {
+    st.push('未配置——普通消息（走 LLM 分析）不可用；礼物/SC/舰长仍走模板');
+  }
+  if (cur.persist_path) st.push('保存到 ' + cur.persist_path + '（含密钥，0600）');
+  $('pState').textContent = st.join(' · ');
+  $('pPersist').value = cur.persist_path || '（未启用持久化）';
+
+  // 把语音接口填进模型配置是最常见的错：形状一样、用途完全不同
+  var mc = $('pMisconfig');
+  if (cur.misconfig){
+    mc.style.display = 'block';
+    mc.innerHTML = '<div class="banner err" style="margin:0"><b>⚠ 接口类型不匹配</b><br>' +
+      esc(cur.misconfig) + '</div>';
+  } else {
+    mc.style.display = 'none';
+  }
+
+  // 已保存过 Key 时，提供「沿用」勾选；否则必须粘贴
+  $('pKey').placeholder = cur.api_key_set ? '粘贴新 Key，或勾选下方沿用' : '粘贴 API Key';
+  $('pKeepWrap').style.display = cur.api_key_set ? 'block' : 'none';
+  $('pKeep').checked = !!cur.api_key_set;
+  $('pKeepMask').textContent = cur.api_key_masked || '';
+}
+
+function fillModelList(providerKey, currentModel){
+  var dl = $('pModels');
+  dl.innerHTML = '';
+  var p = providers.filter(function(x){ return x.key === providerKey; })[0];
+  var list = p ? p.models.slice() : [];
+  if (currentModel && list.indexOf(currentModel) < 0) list.unshift(currentModel);
+  list.forEach(function(m){ dl.appendChild(new Option(m, m)); });
+  return p;
+}
+
+function onProviderChange(){
+  var key = $('pProvider').value;
+  var p = providers.filter(function(x){ return x.key === key; })[0];
+  // 换了服务商就默认不再沿用上一家的 Key，避免拿着 A 的 Key 打 B 的接口
+  $('pKeep').checked = false;
+  if (p){
+    $('pEndpoint').value = p.endpoint;
+    fillModelList(key, null);
+    $('pModel').value = p.models[0] || '';
+    $('pState').textContent = p.note + ' · Key 获取: ' + p.key_hint;
+  } else {
+    fillModelList('custom', null);
+    $('pState').textContent = '自定义服务商：填写任意 OpenAI 兼容的 base URL';
+  }
+}
+
+function saveModel(){
+  var btn = $('pSave'); btn.disabled = true;
+  $('pOut').textContent = '保存中…';
+  var typed = $('pKey').value.trim();
+  var apiKey = typed;
+  if (!typed && $('pKeep').checked) apiKey = '__keep__';   // 与后端约定值
+  fetch('/debug/model', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      provider: $('pProvider').value,
+      endpoint: $('pEndpoint').value,
+      model: $('pModel').value,
+      api_key: apiKey
+    })
+  }).then(function(r){ return r.json().then(function(d){ return {code:r.status, body:d}; }); })
+    .then(function(res){
+      var b = res.body || {};
+      if (b.error){
+        // 校验失败：什么都没改
+        setState('❌ 保存失败：' + b.error, 'err');
+        $('pOut').textContent = b.error;
+        return;
+      }
+      $('pOut').textContent = JSON.stringify(b, null, 2);
+      modelState = b.current || modelState;
+      $('pKey').value = '';           // 不回显明文 Key
+      applyModelState();
+      loadConfig();                   // 顶部状态栏同步
+      if (b.warning){
+        // 已生效但没写进磁盘：必须显眼，否则重启后发现配置没了
+        setState('⚠ ' + b.warning, 'warn');
+      } else {
+        setState('✅ 已保存并生效：' + (b.current.model || '') +
+          '（' + (b.current.provider || 'custom') + '）→ ' + (b.current.persist_path || ''), 'ok');
+        loadProviders();              // 回读磁盘状态，确认真的写进去了
+      }
+    })
+    .catch(function(e){
+      setState('❌ 保存失败：' + e, 'err');
+      $('pOut').textContent = '保存失败: ' + e;
+    })
+    .then(function(){ btn.disabled = false; });
+}
+
+function setState(text, kind){
+  var el = $('pState');
+  el.textContent = text;
+  el.className = 'hint' + (kind ? ' ' + kind : '');
+}
+
+function testModel(){
+  var btn = $('pTest'); btn.disabled = true;
+  $('pOut').textContent = '测试中（用当前已保存的配置发一次最小请求）…';
+  fetch('/debug/model/test', { method:'POST' }).then(function(r){ return r.json(); })
+    .then(function(d){
+      $('pOut').textContent = JSON.stringify(d, null, 2);
+      var line = d.ok ? ('✅ 连通 ' + d.model + ' · ' + d.latency_ms + 'ms · 回复: ' + d.reply)
+                      : ('❌ ' + (d.error || '未知错误'));
+      if (!d.ok && d.endpoint) line += '  （endpoint=' + d.endpoint + '）';
+      $('pState').textContent = line;
+    })
+    .catch(function(e){ $('pOut').textContent = '测试失败: ' + e; })
+    .then(function(){ btn.disabled = false; });
+}
+
+// ── Mimo TTS 配置（试听用）──
+function loadMimo(){
+  return fetch('/debug/mimo').then(function(r){ return r.json(); }).then(function(m){
+    var sel = $('mcVoice');
+    sel.innerHTML = '';
+    (m.voices || []).forEach(function(v){ sel.appendChild(new Option(v, v)); });
+    if (m.voice) sel.value = m.voice;
+    $('mcFormat').value = m.format || 'mp3';
+    $('mcBase').value = m.base_url || '';
+    $('mcModel').value = m.model || '';
+    $('mcPath').textContent = m.persist_path || 'mimo_config.json';
+    $('mcKey').placeholder = m.api_key_set ? ('已配置 ' + m.api_key_masked + '，留空=沿用') : '粘贴 Mimo API Key';
+
+    var st = [];
+    if (m.active){
+      st.push('✅ 当前进程已启用 Mimo，试听可用');
+    } else if (m.api_key_set){
+      st.push('⚠ 已保存配置但当前进程未启用：重启 distillery 后生效');
+    } else {
+      st.push('✖ 未配置：不会生成音频，试听不可用' + (m.why ? '（' + m.why + '）' : ''));
+    }
+    $('mimoState').textContent = st.join(' · ');
+    $('mimoState').className = 'hint ' + (m.active ? 'ok' : (m.api_key_set ? 'warn' : 'err'));
+    return m;
+  }).catch(function(){ /* 忽略 */ });
+}
+
+function saveMimo(){
+  var btn = $('mcSave'); btn.disabled = true;
+  $('mcOut').textContent = '保存中…';
+  fetch('/debug/mimo', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      api_key: $('mcKey').value,
+      base_url: $('mcBase').value,
+      model: $('mcModel').value,
+      voice: $('mcVoice').value,
+      format: $('mcFormat').value
+    })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    $('mcOut').textContent = JSON.stringify(d, null, 2);
+    if (d.error){
+      $('mimoState').textContent = '❌ ' + d.error;
+      $('mimoState').className = 'hint err';
+      return;
+    }
+    $('mcKey').value = '';
+    loadMimo();
+    if (d.warning){
+      $('mimoState').textContent = '⚠ ' + d.warning;
+      $('mimoState').className = 'hint warn';
+    } else if (d.restart_hint){
+      $('mimoState').textContent = '✅ 已保存 · ' + d.restart_hint;
+      $('mimoState').className = 'hint ok';
+    }
+    loadConfig();
+  }).catch(function(e){ $('mcOut').textContent = '保存失败: ' + e; })
+    .then(function(){ btn.disabled = false; });
+}
+
+fillSelects();
+loadConfig();
+loadProviders();
+loadMimo();
+ping();
+loadLog();
+$('refreshBtn').onclick = function(){ loadConfig(); loadProviders(); loadMimo(); ping(); loadLog(); };
+$('mcSave').onclick = saveMimo;
+$('pProvider').onchange = onProviderChange;
+$('pSave').onclick = saveModel;
+$('pTest').onclick = testModel;
+$('qSend').onclick = function(){ submit(this); };
+$('qBurst').onclick = function(){
+  var self = this; self.disabled = true;
+  var i = 0;
+  var timer = setInterval(function(){
+    if (i++ >= 5){ clearInterval(timer); self.disabled = false; return; }
+    $('qContent').value = '连发测试 #' + i;
+    submit($('qSend'));
+  }, 120);
+};
+$('tSend').onclick = syncTest;
+$('mSend').onclick = mimoTest;
+setInterval(function(){
+  ping();
+  // 正在试听时跳过整表重建，避免播放被打断
+  if ($('autoChk').checked && !anyClipPlaying()) loadLog();
+}, 2000);
+soloPlayback();
+</script>
+</body>
+</html>

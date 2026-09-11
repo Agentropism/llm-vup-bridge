@@ -16,9 +16,16 @@ __pycache__/
 /LLM-Vup/
 
 # ---------- 本地配置与密钥 ----------
+# 下列文件都含 API Key，绝不能提交；需要给别人参考时提交同名的 *.example.json
 /config.json
+/model_config.json
+/mimo_config.json
+*.bak
+*.bak.json
 *.env
 !.env.example
+!/model_config.example.json
+!/mimo_config.example.json
 
 # ---------- 运行产物 ----------
 *.log
