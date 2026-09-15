@@ -21,8 +21,10 @@ import (
 	"time"
 )
 
-//go:embed index.html
+//go:embed index.html studio.js
 var files embed.FS
+
+func StudioJS() []byte { data, _ := files.ReadFile("studio.js"); return data }
 
 // IndexHTML 返回调试页面内容。
 func IndexHTML() []byte {

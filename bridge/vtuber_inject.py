@@ -1,112 +1,119 @@
-"""
-POST /inject 路由：接收外部程序（如 distillery）产出的回复文本，
-用 LLM-Vup 默认 TTS 引擎合成语音，并将 音频+字幕+表情 广播给所有已连接的前端。
-不经过 agent 会话链，也没有播放完成确认（参照 upload 注入路径）。
-
-本模块由 bridge/serve.py 在启动时挂载，不修改 LLM-Vup 仓库内的任何文件。
-"""
+"""Bridge routes for text or pre-generated audio, with serialized injection."""
 
 import asyncio
+import base64
+import binascii
+import io
 import json
+import tempfile
+import wave
+from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from src.open_llm_vtuber.agent.output_types import Actions, DisplayText
-from src.open_llm_vtuber.conversations.tts_manager import TTSTaskManager
+from src.open_llm_vtuber.utils.stream_audio import prepare_audio_payload
 
-# 请求里的 emotion 直接就是模型 emo_map 的英文标签（如 "joy"），
-# 由 live2d_model.extract_emotion 按 emo_map 做唯一一处过滤。
 
 class InjectRequest(BaseModel):
-    """外部程序注入的回复请求"""
-
-    text: str
-    emotion: str = ""
-    # 情绪强度（0.0~1.0），保留字段：当前前端协议无强度通道，暂不使用
-    intensity: float = 1.0
+    text: str = Field(min_length=1, max_length=8000)
+    emotion: str = "neutral"
+    intensity: float = Field(default=0.35, ge=0, le=1)
+    audio_base64: str = Field(default="", max_length=32 * 1024 * 1024)
+    audio_format: Literal["mp3", "wav"] = "mp3"
 
 
 def init_inject_route(ws_handler, default_context_cache) -> APIRouter:
-    """
-    创建 `/inject` 路由。
-
-    Args:
-        ws_handler: LLM-Vup 共享的 WebSocketHandler 实例（持有所有前端连接）。
-        default_context_cache: 默认 ServiceContext（提供 TTS 引擎、Live2D 模型、角色配置）。
-    """
-
     router = APIRouter()
+    playback_lock = asyncio.Lock()
 
-    async def broadcast(msg: str) -> None:
-        """向所有已连接的前端广播一条消息，单个连接失败仅记日志"""
+    async def broadcast(msg: dict) -> int:
+        sent = 0
         for uid, ws in list(ws_handler.client_connections.items()):
             try:
-                await ws.send_text(msg)
-            except Exception as e:
-                logger.warning(f"inject 广播到客户端 {uid} 失败: {e}")
+                await ws.send_text(json.dumps(msg))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"inject 广播到 {uid} 失败: {exc}")
+        return sent
+
+    @router.get("/inject/health")
+    async def health():
+        context = default_context_cache
+        return {
+            "bridge": "llm-vup-bridge",
+            "clients": len(ws_handler.client_connections),
+            "character": getattr(context.character_config, "character_name", ""),
+            "tts": type(context.tts_engine).__name__,
+            "audio_injection": True,
+            "busy": playback_lock.locked(),
+            "playback_sync": "audio_duration",
+        }
 
     @router.post("/inject")
     async def inject(req: InjectRequest):
         text = req.text.strip()
         if not text:
             return JSONResponse({"error": "empty text"}, status_code=400)
+        audio_bytes = None
+        if req.audio_base64:
+            try:
+                audio_bytes = base64.b64decode(req.audio_base64, validate=True)
+                if not audio_bytes:
+                    raise ValueError("empty audio")
+            except (ValueError, binascii.Error):
+                return JSONResponse({"error": "invalid base64 audio"}, status_code=400)
 
-        if not ws_handler.client_connections:
-            logger.warning("inject: 没有活跃的前端连接，已丢弃")
-            return JSONResponse({"error": "no frontend connected"}, status_code=409)
-
-        context = default_context_cache
-        character_config = context.character_config
-
-        # 情绪 → 表情：emotion 即 emo_map 英文标签，由 extract_emotion 统一过滤
-        tag = req.emotion.strip().lower()
-        expressions = context.live2d_model.extract_emotion(f"[{tag}]") if tag else []
-        actions = Actions(expressions=expressions) if expressions else None
-
-        display_text = DisplayText(
-            text=text,
-            name=character_config.character_name,
-            avatar=character_config.avatar,
-        )
-
-        # 消息序列参照 process_single_conversation（upload 路径，不等前端播放确认）
-        tts_manager = TTSTaskManager()
-        try:
-            await broadcast(
-                json.dumps({"type": "control", "text": "conversation-chain-start"})
-            )
-
-            await tts_manager.speak(
-                tts_text=text,
-                display_text=display_text,
-                actions=actions,
-                live2d_model=context.live2d_model,
-                tts_engine=context.tts_engine,
-                websocket_send=broadcast,
-            )
-
-            # 等待 TTS 合成完成（TTS 失败时 speak 内部会降级为静音字幕帧）
-            if tts_manager.task_list:
-                await asyncio.gather(*tts_manager.task_list)
-                await broadcast(json.dumps({"type": "backend-synth-complete"}))
-
-            await broadcast(json.dumps({"type": "force-new-message"}))
-            await broadcast(
-                json.dumps({"type": "control", "text": "conversation-chain-end"})
-            )
-        except Exception as e:
-            logger.error(f"inject 处理失败: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
-        finally:
-            tts_manager.clear()
-
-        client_count = len(ws_handler.client_connections)
-        logger.info(
-            f"inject: 已向 {client_count} 个前端广播 (emotion={req.emotion or '无'}): {text[:40]}"
-        )
-        return {"status": "ok", "clients": client_count}
+        async with playback_lock:
+            if not ws_handler.client_connections:
+                return JSONResponse({"error": "没有前端连接，请先打开主项目的 Live2D 页面"}, status_code=409)
+            context = default_context_cache
+            character = context.character_config
+            expressions = context.live2d_model.extract_emotion(f"[{req.emotion.strip().lower()}]")
+            actions = Actions(expressions=expressions) if expressions else None
+            display = DisplayText(text=text, name=character.character_name, avatar=character.avatar)
+            path = None
+            own_file = audio_bytes is not None
+            started = False
+            try:
+                if own_file:
+                    with tempfile.NamedTemporaryFile(suffix=f".{req.audio_format}", delete=False) as f:
+                        f.write(audio_bytes)
+                        path = f.name
+                else:
+                    path = await context.tts_engine.async_generate_audio(text=text)
+                    if not path:
+                        raise ValueError("TTS 没有返回音频文件")
+                payload = await asyncio.to_thread(
+                    prepare_audio_payload, path, display_text=display, actions=actions
+                )
+                # The existing frontend has no injection-specific playback ACK.
+                # Pace injected clips by decoded WAV duration, not synthesis time.
+                with wave.open(io.BytesIO(base64.b64decode(payload["audio"])), "rb") as wav:
+                    duration = wav.getnframes() / wav.getframerate()
+                await broadcast({"type": "control", "text": "conversation-chain-start"})
+                started = True
+                clients = await broadcast(payload)
+                if clients == 0:
+                    raise ValueError("音频发送失败，前端连接已断开")
+                await broadcast({"type": "backend-synth-complete"})
+                await asyncio.sleep(duration)
+                await broadcast({"type": "force-new-message"})
+                return {"status": "ok", "clients": clients, "duration_seconds": duration}
+            except Exception as exc:
+                logger.exception("inject 处理失败")
+                return JSONResponse({"error": str(exc)}, status_code=500)
+            finally:
+                if started:
+                    await broadcast({"type": "control", "text": "conversation-chain-end"})
+                if path:
+                    if own_file:
+                        Path(path).unlink(missing_ok=True)
+                    else:
+                        context.tts_engine.remove_file(path)
 
     return router

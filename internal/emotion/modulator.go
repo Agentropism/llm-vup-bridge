@@ -22,13 +22,13 @@ type Profile struct {
 
 // 情绪 → 语音参数（对齐 Mimo TTS 的 speed 配置）
 var profiles = map[string]Profile{
-	"joy":      {Rate: 25, Pitch: 35, Volume: 15},
-	"surprise": {Rate: 30, Pitch: 50, Volume: 20},
-	"smirk":    {Rate: 8, Pitch: 15, Volume: -10},
-	"sadness":  {Rate: -25, Pitch: -30, Volume: -10},
-	"anger":    {Rate: 35, Pitch: -5, Volume: 25},
-	"fear":     {Rate: 40, Pitch: 45, Volume: -5},
-	"disgust":  {Rate: 15, Pitch: -10, Volume: 10},
+	"joy":      {Rate: 6, Pitch: 8, Volume: 3},
+	"surprise": {Rate: 7, Pitch: 10, Volume: 4},
+	"smirk":    {Rate: 3, Pitch: 5, Volume: 0},
+	"sadness":  {Rate: -6, Pitch: -6, Volume: -3},
+	"anger":    {Rate: 5, Pitch: -2, Volume: 4},
+	"fear":     {Rate: 4, Pitch: 6, Volume: -2},
+	"disgust":  {Rate: -2, Pitch: -3, Volume: 0},
 	"neutral":  {Rate: 0, Pitch: 0, Volume: 0},
 }
 

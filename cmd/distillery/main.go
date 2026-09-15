@@ -375,7 +375,13 @@ func main() {
 		log:             debugui.NewLog(200),
 	}
 
+	studioState, err := newStudio(filepath.Join(configDir, "studio_config.json"), cfg.VTuberAddr)
+	if err != nil {
+		log.Fatalf("角色与接入配置读取失败: %v", err)
+	}
+	app.studio = studioState
 	r := chi.NewRouter()
+	app.mountStudio(r)
 
 	r.Post("/event", func(w http.ResponseWriter, req *http.Request) {
 		var event model.UnifiedEvent
@@ -416,7 +422,7 @@ func main() {
 			MessageType: body.Type,
 		}
 		// 测试端点不走优先级队列：同步处理并返回结果
-		result := processEvent(req.Context(), event, app.llmConfig(), ttsClient, vtuberClient, mimoClient, dispatcher, 0)
+		result := app.process(req.Context(), event, true, false)
 		writeJSON(w, http.StatusOK, result)
 	})
 
@@ -659,6 +665,7 @@ type ProcessResult struct {
 
 // app 持有运行期依赖，供各 HTTP 处理器与调试台共用。
 type app struct {
+	studio       *studio
 	cfg          AppConfig
 	ttsClient    *tts.Client
 	vtuberClient *vtuber.Client
@@ -713,6 +720,9 @@ func (a *app) enqueue(event model.UnifiedEvent) (int64, bool) {
 
 	task := buildSpeakTask(event, a.llmConfig(), a.ttsClient, a.vtuberClient, a.mimoClient, a.dispatcher, a.ttlText, a.ttlGift)
 	accepted := false
+	if a.studio != nil && a.studio.get().OutputMode != "auto" {
+		task.Stop = nil
+	}
 	task.Submitted = func(ok bool) { accepted = ok }
 	task.OnDrop = func(reason string) {
 		log.Printf("[distillery] [%s] %s 丢弃 (%s)", event.Platform, event.UserName, reason)
@@ -724,7 +734,7 @@ func (a *app) enqueue(event model.UnifiedEvent) (int64, bool) {
 	}
 	task.Speak = func(ctx context.Context, boost float64) bool {
 		start := time.Now()
-		result := processEvent(ctx, event, a.llmConfig(), a.ttsClient, a.vtuberClient, a.mimoClient, a.dispatcher, boost)
+		result := a.process(context.WithValue(ctx, boostKey{}, boost), event, false, false)
 		logResult(ctx, event, result, boost)
 		a.log.Update(recorded.Seq, func(e *debugui.Entry) {
 			e.Boost = boost
@@ -825,11 +835,27 @@ func (a *app) mimoView() map[string]any {
 // status 汇总当前生效配置（密钥仅返回是否已配置），供调试页面展示。
 func (a *app) status() map[string]any {
 	llmCfg := a.llmConfig()
+	outputPath, vtuberAddr := a.ttsPath, a.cfg.VTuberAddr
+	if a.studio != nil {
+		settings := a.studio.get()
+		vtuberAddr = settings.VTuberAddr
+		switch settings.OutputMode {
+		case "text":
+			outputPath = "text-only"
+		case "preview":
+			outputPath = "mimo-preview"
+		case "vtuber":
+			outputPath = "vtuber-inject"
+			if a.mimoClient != nil {
+				outputPath = "mimo-to-vtuber"
+			}
+		}
+	}
 	return map[string]any{
 		"listen_addr":       a.cfg.ListenAddr,
-		"tts_path":          a.ttsPath,
+		"tts_path":          outputPath,
 		"tts_addr":          a.cfg.TTSAddr,
-		"vtuber_addr":       a.cfg.VTuberAddr,
+		"vtuber_addr":       vtuberAddr,
 		"mimo_configured":   a.mimoClient != nil,
 		"mimo_voice":        a.cfg.Mimo.Voice,
 		"mimo_model":        a.cfg.Mimo.Model,
@@ -850,7 +876,7 @@ func (a *app) status() map[string]any {
 		"config_env_applied":  a.configDiag.EnvApplied,
 		"config_used_default": a.configDiag.UsedDefault,
 		"speech":              a.cfg.Speech,
-		"prompt_cache_note":   "prompt 由 internal/llm/prompts.go 全局缓存，改文件需重启",
+		"prompt_cache_note":   "基础提示词内嵌于程序；角色与语气可在工作台保存并立即生效",
 		"queue": map[string]any{
 			"max_size":            a.cfg.Speech.QueueMaxSize,
 			"ttl_text_sec":        a.cfg.Speech.QueueTTLTextSec,
@@ -977,48 +1003,25 @@ func logResult(ctx context.Context, event model.UnifiedEvent, result ProcessResu
 	}
 }
 
-func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, dispatcher *dispatch.Dispatcher, boost float64) ProcessResult {
+func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMConfig, ttsClient *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, dispatcher *dispatch.Dispatcher, boost float64, options ...processOptions) ProcessResult {
+	var opts processOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	var trace ttsTrace
 	priority := dispatch.PriorityFor(event.MessageType)
 
 	// ── 礼物/SC/舰长：直接生成感谢，不走 LLM ──
-	if event.MessageType == "gift" || event.MessageType == "super_chat" || event.MessageType == "captain" {
-		if !dispatcher.ShouldRespond("gift_thanks", priority) {
+	if event.MessageType == "gift" || (event.MessageType == "super_chat" && !llmCfg.IsConfigured()) || event.MessageType == "captain" {
+		if !opts.Direct && !dispatcher.ShouldRespond("gift_thanks", priority) {
 			return ProcessResult{SkipReason: "cooldown"}
 		}
 
-		if event.MessageType == "super_chat" && event.Content != "" {
-			thanks, followUp := dispatch.BuildSCReply(event)
-			spoken := sendTTS(ctx, ttsClient, vtuberClient, mimoClient, thanks, "joy", "sc_thanks", 0.9, boost, trace.report)
-			if followUp != "" {
-				// 两段式 SC 回复间隔；等待期间被打断则提前结束
-				select {
-				case <-ctx.Done():
-					r := ProcessResult{
-						Responded: true, ReplyText: thanks, SpokenText: thanks,
-						Emotion: "joy", IntentType: "sc_reply", TTSSpoken: spoken,
-						TTSApplied: true, SkipReason: "interrupted",
-					}
-					trace.apply(&r)
-					return r
-				case <-time.After(1500 * time.Millisecond):
-				}
-				sendTTS(ctx, ttsClient, vtuberClient, mimoClient, followUp, "smirk", "sc_followup", 0.7, boost, trace.report)
-			}
-			fullText := thanks
-			if followUp != "" {
-				fullText += " | " + followUp
-			}
-			r := ProcessResult{
-				Responded: true, ReplyText: fullText,
-				SpokenText: thanks + " … " + followUp,
-				Emotion:    "joy", IntentType: "sc_reply", TTSSpoken: spoken, TTSApplied: true,
-			}
-			trace.apply(&r)
-			return r
-		}
-
 		replyText := dispatch.BuildGiftReply(event)
+		if event.MessageType == "super_chat" {
+			thanks, follow := dispatch.BuildSCReply(event)
+			replyText = strings.TrimSpace(thanks + " " + follow)
+		}
 		if replyText == "" {
 			return ProcessResult{SkipReason: "empty gift reply"}
 		}
@@ -1027,10 +1030,13 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 		if event.MessageType == "captain" {
 			emo = "surprise"
 		}
-		spoken := sendTTS(ctx, ttsClient, vtuberClient, mimoClient, replyText, emo, "gift_thanks", 0.9, boost, trace.report)
+		spoken := false
+		if !opts.Mute {
+			spoken = sendTTS(ctx, ttsClient, vtuberClient, mimoClient, replyText, emo, "gift_thanks", 0.45, boost, trace.report)
+		}
 		r := ProcessResult{
 			Responded: true, ReplyText: replyText, SpokenText: replyText,
-			Emotion: emo, IntentType: "gift_thanks", TTSSpoken: spoken, TTSApplied: true,
+			Emotion: emo, IntentType: "gift_thanks", TTSSpoken: spoken, TTSApplied: !opts.Mute,
 		}
 		trace.apply(&r)
 		return r
@@ -1041,7 +1047,11 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 		// 未配置模型时不必等 30s 超时：直接如实说明
 		return ProcessResult{SkipReason: "未配置 LLM 模型（普通消息需先在调试台配置模型）"}
 	}
-	analysis, err := llm.Analyze(ctx, event.Content, event.UserName, llmCfg)
+	input := event.Content
+	if event.MessageType == "super_chat" {
+		input = "收到这位观众的 SC，请简短感谢并认真回应留言：" + input
+	}
+	analysis, err := llm.AnalyzeWithHistory(ctx, input, event.UserName, llmCfg, opts.History, opts.Persona)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ProcessResult{SkipReason: "interrupted"}
@@ -1050,7 +1060,7 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 		return ProcessResult{SkipReason: "llm error: " + err.Error()}
 	}
 
-	if !dispatcher.ShouldRespond(analysis.IntentType, priority) {
+	if !opts.Direct && !dispatcher.ShouldRespond(analysis.IntentType, priority) {
 		return ProcessResult{
 			SkipReason: "weight/cooldown", IntentType: analysis.IntentType, Emotion: analysis.Emotion,
 		}
@@ -1062,7 +1072,7 @@ func processEvent(ctx context.Context, event model.UnifiedEvent, llmCfg llm.LLMC
 		}
 	}
 
-	if !analysis.ShouldSpeak || !analysis.TTSEnabled {
+	if opts.Mute || !analysis.ShouldSpeak || !analysis.TTSEnabled {
 		// 生成回复但按策略不发声：不算失败
 		return ProcessResult{
 			Responded: true, ReplyText: analysis.ReplyText,
@@ -1107,6 +1117,7 @@ func (t *ttsTrace) apply(r *ProcessResult) {
 // sendTTS 按 Mimo → VTuber 注入 → synapse-tts 的优先级发声。
 // prefix 用作音频文件名前缀（便于调试台区分来源）；report 可空，用于回传音频文件路径或失败原因（试听用）。
 func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Client, mimoClient *tts.MimoClient, text, emo, prefix string, intensity, boost float64, report func(file, errMsg string)) bool {
+	text = llm.CleanSpeech(text)
 	if report == nil {
 		report = func(string, string) {}
 	}
@@ -1117,7 +1128,7 @@ func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Clien
 		if emo != "" {
 			tagged = "[" + emo + "] " + text
 		}
-		filePath, err := mimoClient.GenerateAudioBoost(ctx, tagged, prefix, boost)
+		filePath, err := mimoClient.GenerateAudioExpressive(ctx, tagged, prefix, boost, intensity)
 		if err != nil {
 			log.Printf("[distillery] Mimo TTS 失败: %v", err)
 			report("", err.Error())
@@ -1125,6 +1136,12 @@ func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Clien
 		}
 		log.Printf("[distillery] Mimo TTS 生成: %s", filePath)
 		report(filePath, "")
+		if vtuberClient != nil && vtuberClient.ForwardAudio {
+			if err := vtuberClient.SpeakAudio(ctx, vtuber.SpeakRequest{Text: text, Emotion: emo, Intensity: intensity}, filePath); err != nil {
+				report("", err.Error())
+				return false
+			}
+		}
 		return true
 	}
 
@@ -1146,6 +1163,10 @@ func sendTTS(ctx context.Context, client *tts.Client, vtuberClient *vtuber.Clien
 	}
 
 	// 回退 synapse-tts
+	if client == nil {
+		report("", "未配置语音后端，可切换为仅文字或配置 MiMo")
+		return false
+	}
 	params := emotion.Modulate(emo, intensity)
 	if boost > 0 {
 		params = emotion.BoostRate(params, boost)

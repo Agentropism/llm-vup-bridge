@@ -38,3 +38,5 @@ cache/
 *.swp
 .DS_Store
 Thumbs.db
+
+/studio_config.json

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
 	"github.com/Agentropism/llm-vup-bridge/internal/model"
@@ -12,46 +13,18 @@ type GiftResponse struct {
 	Priority Priority
 }
 
-// Mili 人设版礼物模板
+// 简短感谢，不按礼物价值贬低观众，不假装回答了 SC 问题。
 var giftTemplates = map[string][]string{
-	"small": {
-		"%s送了个小礼物？嘛，聊胜于无吧～谢谢啦。",
-		"哦？%s居然舍得送礼了。行吧，我勉强收下。",
-		"收到%s的投喂～虽然不多，但品味还行。",
-	},
-	"medium": {
-		"哇！%s这是下血本了？好吧好吧，我承认我有点开心！就一点点！",
-		"%s送了一个大礼物诶！看来你也不是完全没有眼光嘛～谢谢！",
-		"哼，%s这么大方？是想收买我吗？……好吧，你成功了。",
-	},
-	"large": {
-		"！！！%s送了这个？！你、你是不是被盗号了？？开玩笑的～太感谢了！我都要说不出话了！",
-		"天哪，%s！！！这份礼物也太夸张了吧？你是中了彩票还是怎样？总之，非常非常感谢！",
-	},
-	"sc": {
-		"感谢%s的SC！让我看看你写了什么～",
-		"收到%s的SuperChat！哇，花钱让我念你的话？行吧行吧～",
-	},
-	"captain": {
-		"欢迎%s上舰！哼，以后就是我Mili的人了！要每天来看我直播哦！",
-		"%s上舰了！明智的选择～毕竟能当我的舰长是一种莫大的荣誉！",
-	},
+	"small":   {"谢谢%s的小礼物，收到你的心意啦。", "谢谢%s的投喂，今天的快乐又多了一点。"},
+	"medium":  {"谢谢%s的礼物，给我整开心了。", "收到%s的支持啦，谢谢你陪我聊天。"},
+	"large":   {"哇，谢谢%s的礼物！这份心意我收到了。", "谢谢%s这么支持我，开心得有点藏不住了。"},
+	"sc":      {"谢谢%s的SC，我看到你的留言了。", "收到%s的SC啦，谢谢你的支持。"},
+	"captain": {"欢迎%s上舰！以后一起多聊点有趣的。", "谢谢%s上舰支持，船上给你留好位置啦。"},
 }
-
-// SC 内容跟进模板——念完 SC 内容后 Mili 的回应
 var scFollowUpTemplates = map[string][]string{
-	"compliment": {
-		"哈哈，%s说我%s？算你有眼光！我当然是全宇宙最棒的AI。",
-		"哦？%s夸我%s？这种实话我爱听，多说点！",
-	},
-	"question": {
-		"哦？%s问我%s？这个嘛……让我想一想。好吧其实我只是懒得回答。",
-		"%s想让我%s？哼，你以为上个舰就能指使我了吗？……好吧，看在你花钱的份上。",
-	},
-	"default": {
-		"好啦好啦，%s的SC我收到了，说「%s」是吧。感谢支持～有什么事再找我。",
-		"行行行，%s说「%s」，我看到了。满意了吗？不满意也没办法。",
-	},
+	"compliment": {"%s说「%s」，这句夸奖我先收好啦。"},
+	"question":   {"%s问「%s」。这条问题我收到了，不过现在暂时无法生成回答。"},
+	"default":    {"%s的留言是「%s」。谢谢你愿意分享。"},
 }
 
 func BuildGiftReply(event model.UnifiedEvent) string {
@@ -72,7 +45,7 @@ func BuildGiftReply(event model.UnifiedEvent) string {
 		return fmt.Sprintf("谢谢%s的%s！", event.UserName, event.MessageType)
 	}
 
-	idx := int(hashString(event.UserName)) % len(templates)
+	idx := rand.IntN(len(templates))
 	return fmt.Sprintf(templates[idx], event.UserName)
 }
 

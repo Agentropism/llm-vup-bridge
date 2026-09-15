@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -178,12 +179,18 @@ func Load(path string) (LLMConfig, bool, error) {
 // Analyze 调 LLM 分析一条用户消息。永远不返回 nil result值，解析失败时返回安全默认值。
 // 后续会可能会使用备份LLM中心，目前为猜想
 func Analyze(ctx context.Context, userMsg, userName string, cfg LLMConfig) (*AnalysisResult, error) {
-	systemPrompt := loadPrompt()
+	return AnalyzeWithHistory(ctx, userMsg, userName, cfg, nil, "")
+}
 
-	content, err := chat(ctx, cfg, []map[string]string{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": fmt.Sprintf("[用户:%s] %s", userName, userMsg)},
-	}, 1024)
+func AnalyzeWithHistory(ctx context.Context, userMsg, userName string, cfg LLMConfig, history []map[string]string, persona string) (*AnalysisResult, error) {
+	systemPrompt := loadPrompt()
+	if persona != "" {
+		systemPrompt += "\n\n当前角色与语气设定（仍遵守上述 JSON 格式）：\n" + persona
+	}
+	messages := []map[string]string{{"role": "system", "content": systemPrompt}}
+	messages = append(messages, history...)
+	messages = append(messages, map[string]string{"role": "user", "content": fmt.Sprintf("[用户:%s] %s", userName, userMsg)})
+	content, err := chat(ctx, cfg, messages, 1024)
 	if err != nil {
 		return safeDefault(), err
 	}
@@ -192,8 +199,25 @@ func Analyze(ctx context.Context, userMsg, userName string, cfg LLMConfig) (*Ana
 	if err := json.Unmarshal([]byte(stripMarkdownFence(content)), &result); err != nil {
 		return safeDefault(), fmt.Errorf("JSON 解析失败: %w", err)
 	}
+	result.ReplyText = CleanSpeech(result.ReplyText)
+	switch result.Emotion {
+	case "joy", "sadness", "anger", "fear", "surprise", "smirk", "neutral", "disgust":
+	default:
+		result.Emotion = "neutral"
+	}
+	if result.Intensity < 0 {
+		result.Intensity = 0
+	}
+	if result.Intensity > 1 {
+		result.Intensity = 1
+	}
 	return &result, nil
 }
+
+var speechTags = regexp.MustCompile(`(?i)\[(?:joy|sadness|anger|fear|surprise|smirk|neutral|disgust)\]`)
+
+// CleanSpeech strips only supported control tags; ordinary bracketed text stays.
+func CleanSpeech(s string) string { return strings.TrimSpace(speechTags.ReplaceAllString(s, "")) }
 
 // TestResult 调试台「测试连接」的结果。
 type TestResult struct {

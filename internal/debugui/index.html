@@ -18,7 +18,7 @@
   .tag{font:11px/1.6 var(--mono);padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--dim)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
   .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
-  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;padding:12px 16px 40px;align-items:start}
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));gap:12px;padding:12px 16px 40px;align-items:start}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
   .card>h2{margin:0;padding:9px 12px;font-size:13px;font-weight:600;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
   .card .body{padding:12px}
@@ -65,6 +65,20 @@
   .clip a{font:11px/1.6 var(--mono);color:var(--dim);text-decoration:none;border-bottom:1px dotted var(--line);white-space:nowrap}
   .clip a:hover{color:var(--accent)}
   audio{height:32px}
+
+  [hidden]{display:none!important}
+  .studio-nav{display:flex;gap:8px;padding:12px 16px 0;flex-wrap:wrap}
+  .studio-nav button[aria-selected="true"]{background:var(--accent);color:#0b0e14}
+  .chat-layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(260px,1fr);gap:16px}
+  .chat-feed{height:370px;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:12px;background:#11141c;border-radius:8px}
+  .chat-msg{max-width:94%;padding:10px 13px;background:var(--panel2);border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere}
+  .chat-msg.user{align-self:flex-end;background:#24304a}
+  .chat-msg small{display:block;color:var(--dim);margin-bottom:5px}
+  .chat-msg audio{display:block;width:100%;margin-top:8px}
+  .chat-empty{margin:auto;color:var(--dim);text-align:center}
+  .inline-check{display:flex;align-items:center;gap:5px;margin:0}
+  .inline-check input{width:auto}
+  @media(max-width:760px){.chat-layout{grid-template-columns:1fr}.row3{grid-template-columns:1fr}.chat-feed{height:300px}}
 </style>
 </head>
 <body>
@@ -78,16 +92,49 @@
   <button class="ghost" id="refreshBtn">刷新</button>
 </header>
 
+<nav class="studio-nav" aria-label="工作台页面">
+ <button class="ghost" data-tab="chat" aria-selected="true">聊天与角色</button>
+ <button class="ghost" data-tab="models" aria-selected="false">模型与语音</button>
+ <button class="ghost" data-tab="events" aria-selected="false">事件与诊断</button>
+</nav>
 <main>
+<section class="card wide" data-view="chat" id="studioCard">
+ <h2>连续对话 <span class="hint">接住前文，试听真实语气</span></h2>
+ <div class="body chat-layout">
+  <div>
+   <div class="chat-feed" id="chatFeed" role="log" aria-live="polite"><div class="chat-empty">从一句日常聊天开始。<br>后续可以追问，测试角色能否接住话题。</div></div>
+   <div class="actions"><button class="ghost" data-example="今天忙了一天，总算能歇会儿了。">日常闲聊</button><button class="ghost" data-example="我最近在学做饭，不过总是把蛋炒糊。">分享近况</button><button class="ghost" data-example="你刚才说的那个，能再讲具体一点吗？">追问前文</button></div>
+   <div class="field" style="margin-top:12px"><label for="chatText">消息 · Enter 发送，Shift+Enter 换行</label><textarea id="chatText" placeholder="说点什么…" maxlength="2000"></textarea></div>
+   <div class="actions">
+    <button id="chatSend">发送</button><button class="ghost" id="chatCancel" disabled>取消生成</button>
+    <label class="inline-check"><input type="checkbox" id="chatMute" checked>仅文字测试</label>
+    <label class="inline-check"><input type="checkbox" id="chatAuto" checked>自动试听</label>
+   </div>
+   <div class="actions"><button class="ghost" id="chatStop">停止本页音频</button><button class="ghost" id="chatClear">清空上下文</button><button class="ghost" id="chatExport">导出对话</button><span class="hint" id="chatState" role="status"></span></div>
+  </div>
+  <div>
+   <div class="field"><label for="chatUser">测试观众名</label><input id="chatUser" value="测试观众" maxlength="80"></div>
+   <div class="field"><label for="studioPersona">角色与语气</label><textarea id="studioPersona" style="min-height:130px" maxlength="4000"></textarea></div>
+   <div class="field"><label for="studioTurns">保留最近几轮对话</label><input id="studioTurns" type="number" min="1" max="20" value="8"></div>
+   <div class="field"><label for="studioOutput">回复输出到</label><select id="studioOutput"><option value="auto">沿用配置的自动选择</option><option value="preview">本页试听（MiMo）</option><option value="vtuber">主项目 Live2D</option><option value="text">仅文字</option></select></div>
+   <div class="field"><label for="studioAddr">主项目地址</label><input id="studioAddr" placeholder="http://localhost:12393"></div>
+   <div class="actions"><button id="studioSave">保存并应用</button><span class="hint" id="studioState" role="status"></span></div>
+   <div class="hint" style="margin-top:8px">设置应用于后续对话与事件。上下文保存在内存中，空闲 30 分钟后过期。</div>
+   <div class="actions"><button class="ghost" id="studioCheck">检测主项目</button><a id="studioOpen" target="_blank" rel="noopener">打开 Live2D</a></div>
+   <p class="hint" id="studioHealth">通过 bash scripts/start.sh 一起启动桥接与主项目；也可先用 --debug 独立调试。</p>
+   <details><summary class="hint">语音接入说明</summary><p class="hint">选择主项目后，已配置的 MiMo 音频会连同字幕和表情送到 Live2D；没有 MiMo 时使用主项目 TTS。本页的停止按钮只控制本页音频。</p></details>
+  </div>
+ </div>
+</section>
   <div id="cfgBanner" class="banner" style="display:none"></div>
   <!-- 运行状态 -->
-  <section class="card">
+  <section class="card" data-view="events" hidden>
     <h2>运行状态 <span class="hint" id="logCount"></span></h2>
     <div class="body"><div class="kv" id="statusKv"><b>加载中</b><span></span></div></div>
   </section>
 
   <!-- 优先级与情绪参考 -->
-  <section class="card">
+  <section class="card" data-view="events" hidden>
     <h2>优先级 / 情绪参考</h2>
     <div class="body" style="padding-top:0">
       <table>
@@ -103,7 +150,7 @@
   </section>
 
   <!-- 模型配置 -->
-  <section class="card wide">
+  <section class="card wide" data-view="models" hidden>
     <h2>模型配置 <span class="hint">保存后立即生效，无需重启 · POST /debug/model</span></h2>
     <div class="body">
       <div class="row3">
@@ -135,7 +182,7 @@
   </section>
 
   <!-- 队列提交 -->
-  <section class="card">
+  <section class="card" data-view="events" hidden>
     <h2>队列提交 <span class="hint">POST /event → 优先级队列</span></h2>
     <div class="body">
       <div class="row">
@@ -158,7 +205,7 @@
   </section>
 
   <!-- 同步测试 -->
-  <section class="card">
+  <section class="card" data-view="events" hidden>
     <h2>同步测试 <span class="hint">POST /test → 不经队列</span></h2>
     <div class="body">
       <div class="row">
@@ -175,7 +222,7 @@
   </section>
 
   <!-- Mimo TTS 配置 -->
-  <section class="card" id="mimoCfgCard">
+  <section class="card" id="mimoCfgCard" data-view="models" hidden>
     <h2>Mimo TTS 配置 <span class="hint">保存到 mimo_config.json · 需重启生效</span></h2>
     <div class="body">
       <div id="mimoState" class="hint" style="margin-bottom:8px">—</div>
@@ -198,7 +245,7 @@
   </section>
 
   <!-- Mimo TTS -->
-  <section class="card">
+  <section class="card" data-view="models" hidden>
     <h2>Mimo TTS 试听 <span class="hint">POST /tts/mimo</span></h2>
     <div class="body">
       <div class="field"><label>文本 text</label><textarea id="mText" placeholder="喂你这个笨蛋！"></textarea></div>
@@ -223,7 +270,7 @@
   </section>
 
   <!-- 最近事件 -->
-  <section class="card wide">
+  <section class="card wide" data-view="events" hidden>
     <h2>最近事件 <span class="hint" id="autoHint">每 2s 自动刷新</span>
       <label class="hint" style="margin:0;display:flex;gap:5px;align-items:center;width:auto">
         <input type="checkbox" id="autoChk" checked style="width:auto"> 自动刷新</label>
@@ -255,13 +302,13 @@ var PRIORITIES = [
   {v:5, key:'captain',   zh:'舰长',       ttl:'ttl_gift_sec'}
 ];
 var EMOTIONS = [
-  {name:'joy',       rate:25,  pitch:35,  vol:15},
-  {name:'surprise',  rate:30,  pitch:50,  vol:20},
-  {name:'smirk',     rate:8,   pitch:15,  vol:-10},
-  {name:'sadness',   rate:-25, pitch:-30, vol:-10},
-  {name:'anger',     rate:35,  pitch:-5,  vol:25},
-  {name:'fear',      rate:40,  pitch:45,  vol:-5},
-  {name:'disgust',   rate:15,  pitch:-10, vol:10},
+  {name:'joy',       rate:6,   pitch:8,   vol:3},
+  {name:'surprise',  rate:7,   pitch:10,  vol:4},
+  {name:'smirk',     rate:3,   pitch:5,   vol:0},
+  {name:'sadness',   rate:-6,  pitch:-6,  vol:-3},
+  {name:'anger',     rate:5,   pitch:-2,  vol:4},
+  {name:'fear',      rate:4,   pitch:6,   vol:-2},
+  {name:'disgust',   rate:-2,  pitch:-3,  vol:0},
   {name:'neutral',   rate:0,   pitch:0,   vol:0}
 ];
 var TYPES = [
@@ -291,7 +338,7 @@ function anyClipPlaying(){
 
 // 同一时刻只允许一段音频播放：播放新的就暂停其它
 function soloPlayback(){
-  var tb = $('logTbl');
+  var tb = document;
   tb.addEventListener('play', function(ev){
     if (ev.target.tagName !== 'AUDIO') return;
     Array.prototype.forEach.call(tb.querySelectorAll('audio'), function(a){
@@ -306,9 +353,9 @@ function fillSelects(){
     q.appendChild(new Option(x.zh, x.v));
     t.appendChild(new Option(x.zh, x.v));
   });
-  m.appendChild(new Option('（随机 smirk）','smirk'));
+  m.appendChild(new Option('自然平静','neutral'));
   EMOTIONS.forEach(function(e){ m.appendChild(new Option(e.name, e.name)); });
-  m.value = 'smirk';
+  m.value = 'neutral';
 
   var pb = $('priTbl');
   PRIORITIES.forEach(function(p){
@@ -381,7 +428,7 @@ function loadConfig(){
       ['可选情绪', EMOTIONS.map(function(e){ return e.name; }).join(' ')]
     ];
     $('statusKv').innerHTML = kv.map(function(p){
-      return '<b>' + p[0] + '</b><span>' + p[1] + '</span>';
+      return '<b>' + esc(p[0]) + '</b><span>' + esc(p[1]) + '</span>';
     }).join('');
 
     // 音色下拉：默认项标注当前配置；不可用时禁用整个面板
@@ -770,5 +817,6 @@ setInterval(function(){
 }, 2000);
 soloPlayback();
 </script>
+<script src="/debug/studio.js"></script>
 </body>
 </html>

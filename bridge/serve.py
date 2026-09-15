@@ -27,12 +27,14 @@ import asyncio
 import atexit
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # 定位 LLM-Vup 仓库根并切入（LLM-Vup 大量使用相对路径：conf.yaml、cache、models 等）
-LLM_VUP_ROOT = Path(
-    os.environ.get("LLM_VUP_ROOT", Path(__file__).resolve().parent.parent / "LLM-Vup")
-).resolve()
+BRIDGE_ROOT = Path(__file__).resolve().parent.parent
+_candidates = [BRIDGE_ROOT.parent / "LLM-Vup", BRIDGE_ROOT / "LLM-Vup"]
+_default_root = next((p for p in _candidates if (p / "run_server.py").is_file()), _candidates[0])
+LLM_VUP_ROOT = Path(os.environ.get("LLM_VUP_ROOT", _default_root)).resolve()
 if not (LLM_VUP_ROOT / "run_server.py").is_file():
     raise SystemExit(f"未找到 LLM-Vup 仓库: {LLM_VUP_ROOT}（用 LLM_VUP_ROOT 环境变量指定）")
 os.chdir(LLM_VUP_ROOT)
@@ -90,6 +92,19 @@ def run(console_log_level: str):
     if getattr(server_config, "enable_proxy", False):
         logger.info("Proxy mode enabled - /proxy-ws endpoint will be available")
 
+    # Missing optional avatar assets use a temporary empty directory; the upstream
+    # checkout is never patched or populated by this bridge.
+    if not (LLM_VUP_ROOT / "avatars").is_dir():
+        empty_avatars = tempfile.TemporaryDirectory(prefix="llm-vup-avatars-")
+        atexit.register(empty_avatars.cleanup)
+        original_avatar_files = server_module.AvatarStaticFiles
+
+        def avatar_files(*args, **kwargs):
+            kwargs["directory"] = empty_avatars.name
+            return original_avatar_files(*args, **kwargs)
+
+        server_module.AvatarStaticFiles = avatar_files
+
     # 构造过程中会调用被包装的 init_client_ws_route，从而捕获 ws_handler
     server = server_module.WebSocketServer(config=config)
 
@@ -103,7 +118,7 @@ def run(console_log_level: str):
         # include_router 追加在 catch-all 前端静态挂载(Mount "/", name="frontend")之后，
         # 请求会先被静态挂载拦截(405)，需把 /inject 路由挪到该挂载之前
         routes = server.app.router.routes
-        inject_routes = [r for r in routes if getattr(r, "path", None) == "/inject"]
+        inject_routes = [r for r in routes if getattr(r, "path", "").startswith("/inject")]
         mount_idx = next(
             (i for i, r in enumerate(routes) if getattr(r, "name", None) == "frontend"),
             len(routes),

@@ -46,34 +46,16 @@ type EmotionProfile struct {
 	MimoEmo string  // Mimo emotion 参数 (angry/happy/sad/fearful/surprised)
 }
 
-// ShortBoost 短句增强配置
-type ShortBoost struct {
-	Append string  // 尾缀文本
-	Speed  float64 // 增强后的语速
-}
-
-// 情绪 → Mimo 参数映射
+// 情绪只轻微改变表达，不强迫喊叫、哭腔或追加台词。
 var emotionProfiles = map[string]EmotionProfile{
-	"anger":    {Context: "用超愤怒暴躁的语气说——大声吼出来！非常生气！", Speed: 1.35, MimoEmo: "angry"},
-	"joy":      {Context: "用超级开心兴奋的语气说——得意洋洋笑出声！开心到飞起！", Speed: 1.25, MimoEmo: "happy"},
-	"sadness":  {Context: "用委屈带哭腔的语气说——声音颤抖，慢一点，楚楚可怜快要哭了", Speed: 0.75, MimoEmo: "sad"},
-	"fear":     {Context: "用害怕慌张的语气说——倒吸一口凉气，声音发抖，语速很快！", Speed: 1.4, MimoEmo: "fearful"},
-	"surprise": {Context: "用惊讶不可置信的语气说——眼睛瞪大，声音上扬，不敢相信！", Speed: 1.3, MimoEmo: "surprised"},
-	"smirk":    {Context: "用嘲讽冷笑、阴阳怪气的语气说——毒舌又可爱，'呵，愚蠢的人类'", Speed: 1.08, MimoEmo: "happy"},
-	"disgust":  {Context: "用嫌弃厌恶的语气说——皱着眉头，满满的鄙夷和不耐烦", Speed: 1.15, MimoEmo: "angry"},
-	"neutral":  {Context: "用自然放松的口语语气说——像在直播间闲聊一样随意轻快", Speed: 1.0, MimoEmo: "default"},
-}
-
-// 短句（≤6字）增强映射
-var shortBoosts = map[string]ShortBoost{
-	"anger":    {Append: "！！你这个——算了！！", Speed: 1.45},
-	"joy":      {Append: "哈哈～美滋滋～", Speed: 1.3},
-	"sadness":  {Append: "……呜……", Speed: 0.7},
-	"fear":     {Append: "吓死我了！！", Speed: 1.5},
-	"surprise": {Append: "！！什么？！真的假的？！", Speed: 1.4},
-	"smirk":    {Append: "哼哼～知道就好～", Speed: 1.12},
-	"disgust":  {Append: "啧，无语了。", Speed: 1.2},
-	"neutral":  {Append: "嗯。", Speed: 1.0},
+	"anger":    {Context: "认真、有一点不满，但保持克制，不喊叫。", Speed: 1.04, MimoEmo: "angry"},
+	"joy":      {Context: "带一点笑意，轻松愉快地聊天，不夸张表演。", Speed: 1.04, MimoEmo: "happy"},
+	"sadness":  {Context: "声音温和、稍低落，自然停顿，不刻意哭泣。", Speed: 0.95, MimoEmo: "sad"},
+	"fear":     {Context: "略有担心，语气自然，不尖叫或喘气。", Speed: 1.02, MimoEmo: "fearful"},
+	"surprise": {Context: "轻微惊喜，句尾自然上扬，不大声喊叫。", Speed: 1.04, MimoEmo: "surprised"},
+	"smirk":    {Context: "带笑意地轻轻打趣，亲近俏皮，不冷笑或挖苦。", Speed: 1.02, MimoEmo: "happy"},
+	"disgust":  {Context: "轻微无奈，平静表达，不用夸张厌恶的语调。", Speed: 0.98, MimoEmo: "default"},
+	"neutral":  {Context: "自然放松地聊天，按语义连贯表达和停顿，不逐字念稿。", Speed: 1.0, MimoEmo: "default"},
 }
 
 // MimoClient MiMo TTS 客户端
@@ -92,32 +74,22 @@ func NewMimoClient(cfg MimoConfig) *MimoClient {
 	return &MimoClient{
 		cfg:    cfg,
 		http:   &http.Client{Timeout: 60 * time.Second},
-		emoTag: regexp.MustCompile(`\[(\w+)\]`),
+		emoTag: regexp.MustCompile(`(?i)\[(joy|sadness|anger|fear|surprise|smirk|neutral|disgust)\]`),
 	}
 }
 
 // ParseEmotion 从文本中提取情绪标签并返回对应的 Mimo 参数
 func (m *MimoClient) ParseEmotion(text string) (context string, speed float64, mimoEmotion string, boostText string) {
-	clean := m.emoTag.ReplaceAllString(text, "")
-	clean = strings.TrimRight(clean, "….,!?！？\n\r\t ")
-	isShort := len([]rune(clean)) <= 6
-
 	matches := m.emoTag.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
 		p := emotionProfiles["neutral"]
 		return p.Context, p.Speed, p.MimoEmo, ""
 	}
 
-	tag := strings.ToLower(matches[len(matches)-1][1])
+	tag := strings.ToLower(matches[0][1])
 	p, ok := emotionProfiles[tag]
 	if !ok {
 		p = emotionProfiles["neutral"]
-	}
-
-	if isShort {
-		if b, ok := shortBoosts[tag]; ok {
-			return p.Context, b.Speed, p.MimoEmo, " " + b.Append
-		}
 	}
 
 	return p.Context, p.Speed, p.MimoEmo, ""
@@ -138,6 +110,11 @@ func (m *MimoClient) GenerateAudioWith(ctx context.Context, text, filePrefix str
 	return m.generateAudio(ctx, text, filePrefix, 0, opts)
 }
 
+// GenerateAudioExpressive preserves text while applying explicit emotion intensity.
+func (m *MimoClient) GenerateAudioExpressive(ctx context.Context, text, prefix string, boost, intensity float64) (string, error) {
+	return m.generateAudio(ctx, text, prefix, boost, MimoOptions{Intensity: &intensity})
+}
+
 // CacheDir 返回音频缓存目录（供调试台挂载试听端点）。
 func (m *MimoClient) CacheDir() string { return m.cfg.CacheDir }
 
@@ -149,22 +126,34 @@ func (m *MimoClient) Voice() string { return m.cfg.Voice }
 
 // MimoOptions 单次生成的覆盖项；零值表示沿用全局配置。
 type MimoOptions struct {
-	Voice  string  // 覆盖音色
-	Format string  // 覆盖格式（mp3/wav）
-	Speed  float64 // 直接指定语速（覆盖情绪推导值）
+	Voice     string   // 覆盖音色
+	Format    string   // 覆盖格式（mp3/wav）
+	Speed     float64  // 直接指定语速（覆盖情绪推导值）
+	Intensity *float64 // nil 使用轻微情绪；0 表示中性
 }
 
 func (m *MimoClient) generateAudio(ctx context.Context, text, filePrefix string, queueBoost float64, opts MimoOptions) (string, error) {
-	emoCtx, speed, mimoEmo, boostText := m.ParseEmotion(text)
-	ttsText := text
-	if boostText != "" {
-		ttsText = strings.TrimSpace(text + boostText)
+	emoCtx, speed, mimoEmo, _ := m.ParseEmotion(text)
+	ttsText := strings.TrimSpace(m.emoTag.ReplaceAllString(text, ""))
+	if ttsText == "" {
+		return "", fmt.Errorf("mimo: 文本不能为空")
 	}
+	intensity := 0.35
+	if opts.Intensity != nil {
+		intensity = max(0, min(1, *opts.Intensity))
+	}
+	speed = 1 + (speed-1)*intensity
+	if intensity == 0 {
+		emoCtx = emotionProfiles["neutral"].Context
+		mimoEmo = "default"
+	}
+	emoCtx += fmt.Sprintf(" 情绪强度 %.0f%%，只朗读提供的正文，保留标点停顿，不添加词句。", intensity*100)
 	speed += queueBoost
 	if opts.Speed > 0 {
 		speed = opts.Speed
 	}
 
+	speed = max(0.8, min(1.2, speed))
 	voice := m.cfg.Voice
 	if opts.Voice != "" {
 		voice = opts.Voice

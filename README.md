@@ -15,6 +15,45 @@
 - **配置 Mimo 并试听**：每段音频一个原生播放器，可拖动进度条
 - 查看每条事件的**结果、耗时、情绪、回复文本与音频**，以及配置加载诊断
 
+## 连续对话工作台
+
+默认风格是自然俏皮的 Mili：先回应内容，偶尔轻轻吐槽。取消强制长短句、逐句换情绪和 TTS 短句加台词，情绪标签不会进入朗读正文。
+
+工作台分为「聊天与角色」「模型与语音」「事件与诊断」：
+
+- 连续聊天：默认只测试文字，取消勾选后可生成语音；支持取消生成、停止本页音频、清空上下文和导出对话。
+- 角色、上下文轮数和输出位置保存后立即对后续请求生效，存储在配置目录的 studio_config.json。
+- 输出可选自动、本页 MiMo 试听、主项目 Live2D、仅文字。主项目模式会把 MiMo 音频直接注入 Live2D；没有 MiMo 时使用主项目 TTS。
+- 检测主项目可查看接口是否挂载、角色、前端连接数量和播报状态。
+- 连续聊天跳过直播回复概率和冷却；事件面板继续使用实际直播调度策略。
+
+上下文按平台与房间隔离，无房间时按用户 ID（缺省为用户名）隔离。Web 聊天使用独立会话，不混入直播。默认最近 8 轮，最多 20 轮、128 个会话，空闲 30 分钟后过期；重启清空。只有已接受的回复进入上下文，直播中被丢弃的回复不进入历史。
+
+## 一起启动（无需复制文件到主项目）
+
+依赖：Go 1.26.4+；一起启动还需要 uv，以及已安装依赖、配置模型和语音引擎的 LLM-Vup。脚本自动识别相邻的 ../LLM-Vup，可用 LLM_VUP_ROOT 指定其它位置。
+
+```bash
+cd /home/demo/Agentropism/llm-vup-bridge
+bash scripts/start.sh --debug  # 只启动 Web 调试台
+# 或一起启动桥接与主项目（主项目依赖需事先准备好）
+bash scripts/start.sh
+```
+
+脚本会构建 Go 二进制；首次运行从示例生成本仓库的 config.json，不覆盖已有配置。打开 http://localhost:9528/debug，在「模型与语音」配置接口，再回到「聊天与角色」测试。主项目模式需先保存地址并打开 Live2D 页面。自定义配置可设置 BRIDGE_CONFIG；Ctrl+C 会结束脚本启动的两个服务。
+
+桥接只在运行时挂载接口，不需要修改 LLM-Vup 源文件。主项目自身仍使用原有配置、缓存和资源目录。
+
+新增接口：
+
+| 接口 | 用途 |
+|---|---|
+| GET/POST /debug/studio | 读取/保存角色、上下文与输出设置 |
+| POST /debug/chat | 连续聊天，参数 session、text、user、mute；返回 result 与 audio_urls |
+| POST /debug/chat/clear | 清空指定 session 的 Web 聊天上下文 |
+| GET /debug/integration | 检查已保存地址的桥接状态 |
+| GET /inject/health（主项目端） | 前端数量、角色、播报状态和音频注入能力 |
+
 ## 组成
 
 | 部分 | 技术 | 说明 |
@@ -28,7 +67,7 @@
 | `internal/emotion/` | Go | 情绪→语音参数映射 |
 | `internal/llm/` | Go | LLM 分析客户端（可运行时切换服务商） |
 | `internal/provider/` | Go | 服务商预设（DeepSeek / OpenCode Go / OpenAI）与接口类型识别 |
-| `prompts/` | 文本 | LLM 分析 prompt（运行时加载） |
+| `prompts/` | 文本 | LLM 基础 prompt（编译时内嵌；角色可在工作台修改） |
 
 ## 密钥与文件安全
 
@@ -58,7 +97,7 @@ cd /path/to/LLM-Vup
 
 ```bash
 cd /path/to/LLM-Vup
-sudo LLM_VUP_ROOT=$(pwd) uv run python ./bridge/serve.py --verbose
+LLM_VUP_ROOT=/path/to/LLM-Vup uv run --project /path/to/LLM-Vup python /path/to/llm-vup-bridge/bridge/serve.py --verbose
 # 看到「桥接已挂载: POST /inject」即成功
 ```
 
@@ -127,7 +166,7 @@ distillery 单独就能跑：`go build -o distillery ./cmd/distillery && ./disti
 
 ## 发言优先级调度（PRD 第四部分）
 
-distillery 内置单消费者优先级调度器（`internal/dispatch/scheduler.go`），所有发言任务经 `POST /event` 入队后**串行执行，TTS 播放互不重叠**：
+distillery 内置单消费者优先级调度器（`internal/dispatch/scheduler.go`），所有发言任务经 `POST /event` 入队后**串行执行处理任务**。主项目注入会按音频时长等待再处理下一段；这是时长同步，不是前端播放确认：
 
 | 行为 | 规则 |
 |------|------|
@@ -154,37 +193,17 @@ distillery 内置单消费者优先级调度器（`internal/dispatch/scheduler.g
 
 `POST /test` 为同步测试端点，不经过优先级队列。待机动画打断属前端行为，不在本仓库实现。
 
-## TTS 路径优先级
+## TTS 输出与情绪
 
-1. **Mimo 直连**（`mimo.api_key` 非空）→ 直接调用 Mimo API，绕过 LLM-Vup
-2. **VTuber 注入**（`mimo.api_key` 为空 + `vtuber_addr` 非空）→ `POST /inject`
-3. **synapse-tts 回退**（两者均为空）→ `POST /speak`
+工作台的输出设置优先。自动模式维持 MiMo → VTuber → synapse-tts 的选择顺序；这是配置选择，不是请求失败后的自动切换。
 
-## Mimo TTS 情绪控制
+- 本页试听：MiMo 生成音频，浏览器试听，不发送给主项目。
+- 主项目：有 MiMo 时生成音频再通过 /inject 发送音频、字幕和表情；没有 MiMo 时由主项目合成。
+- 仅文字：不调用 TTS。
 
-Mimo 引擎内置完整的情绪—语音参数映射：
+MiMo 根据情绪和强度轻微调整语速，最终限制在 0.8–1.2。短句原样朗读，不追加尾缀；单次试听可以覆盖音色、格式与语速。synapse 的情绪调节幅度也已减小。
 
-| 情绪 | 表演指令 | speed | Mimo emotion |
-|------|----------|-------|-------------|
-| anger | 超愤怒暴躁、大声吼出来 | 1.35 | angry |
-| joy | 超级开心兴奋、笑出声 | 1.25 | happy |
-| sadness | 委屈带哭腔、声音颤抖 | 0.75 | sad |
-| fear | 害怕慌张、倒吸凉气 | 1.4 | fearful |
-| surprise | 惊讶不可置信、声音上扬 | 1.3 | surprised |
-| smirk | 嘲讽冷笑、阴阳怪气 | 1.08 | happy |
-| disgust | 嫌弃厌恶、皱着眉头 | 1.15 | angry |
-| neutral | 自然放松、随意轻快 | 1.0 | default |
-
-**短句增强（≤6 字）**：自动追加戏剧化尾缀并提升 speed，让短句不干瘪。
-
-## 礼物/SC 处理
-
-- **礼物**：按价值分级（小/中/大），Mili 傲娇风格感谢
-- **SC**：两段式——先感谢（joy），1.5 秒后念内容并回应（smirk）
-  - 自动分类 SC 内容（夸赞/提问/其他）生成不同风格的跟进回复
-- **舰长**：惊喜欢迎（surprise）
-
-内置礼物关键词：火箭、城堡、星球、嘉年华、总督、提督 → 大；飞船、摩天轮、烟花、告白 → 中
+礼物与舰长使用简短感谢模板。SC 在模型已配置时由 LLM 连贯地感谢并回应内容；未配置模型时使用感谢与留言模板，明确不能生成问题答案。整个 SC 回复一次合成，不再插入固定 1.5 秒间隔。
 
 ## POST /inject 协议
 
@@ -194,7 +213,9 @@ Mimo 引擎内置完整的情绪—语音参数映射：
 
 - `text`（必填）
 - `emotion`（可选）：emo_map 英文标签 `joy|sadness|anger|fear|surprise|smirk|neutral|disgust`
-- `intensity`（可选，保留）：0.0~1.0
+- `intensity`（可选）：0.0~1.0；主项目现有表情协议暂无强度通道。
+- `audio_base64`（可选）：已合成音频的 Base64，不含 data URL 前缀。
+- `audio_format`（可选）：mp3 或 wav。提供音频时主项目直接播放，跳过自身 TTS。
 
 响应：
 - `200 {"status":"ok","clients":N}` — 已广播
@@ -304,7 +325,7 @@ Mimo 引擎内置完整的情绪—语音参数映射：
 
 ### 试听
 
-- 每个事件生成的所有音频片段都会记录在调试台里，**每段一个原生 `<audio controls>` 播放器**（自带进度条、音量、暂停），可逐段播放；SC 是两段：感谢 + 内容回应。
+- 每个事件生成的所有音频片段都会记录在调试台里，**每段一个原生 `<audio controls>` 播放器**（自带进度条、音量、暂停），可逐段播放；SC 的感谢与内容回应使用同一段音频。
 - 播放状态完全由浏览器维护，不由 JS 变量记账——因此自动刷新重建表格不会造成"显示 ▶ 但还在响"或"多段同时播放"。正在播放时自动刷新会自动跳过，避免打断。
 - 同一时刻只播放一段：开始播新的会自动暂停其它（表内事件委托保证）。
 - `GET /debug/audio/{name}` 用 `http.ServeContent` 提供，支持 Range 请求，可直接拖动进度条（`206 Partial Content`）。
@@ -334,7 +355,7 @@ JSON
 
 事件结果由 `internal/debugui` 的环形缓冲记录：入队即写一条，`Speak` 完成后回填结果，被丢弃的任务由 `SpeakTask.OnDrop` 标注原因。记录只在内存中，重启即清空。
 
-`GET /debug/config` 返回的 `prompt_cache_note` 提醒：`internal/llm/prompts.go` 有全局 prompt 缓存，改完 prompt 文件必须重启进程才生效。
+基础提示词编译进二进制，更新 prompts/intent_analysis.txt 后需要重新构建。角色与语气设定可在工作台保存后立即应用。
 
 ## 验证
 
@@ -350,9 +371,20 @@ curl -X POST localhost:9528/test -H 'Content-Type: application/json' \
 
 ## 已知限制
 
-- 前端 interrupt 不打断注入播放
-- 无需 LLM-Key 时礼物/SC 仍可工作（纯模板），文本消息需要 LLM API Key
-- Mimo 直连时音频缓存到本地 `cache/` 目录
+- 主项目注入按音频时长串行等待，尚无前端播放完成确认；主项目自身对话与主动发言未纳入桥接队列。
+- 取消生成会取消在途请求；已发给 Live2D 的音频不能由本页停止按钮打断。本页播放器全局互斥。
+- MiMo 配置沿用原来的保存后重启机制；模型与角色/输出设置支持立即生效。
+- 上下文保存在内存中，不是长期记忆；礼物感谢仍为模板。
+
+## 验证
+
+```bash
+CGO_ENABLED=0 go test ./...
+node --check internal/debugui/studio.js
+bash -n scripts/start.sh
+```
+
+自动测试使用本机模拟 HTTP 服务验证连续对话、上下文隔离/清空、配置持久化、语音正文和音频注入。实际听感与 Live2D 播放需配置真实服务后试听。
 
 ## 许可证
 
