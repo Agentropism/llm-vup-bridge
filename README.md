@@ -388,4 +388,4 @@ bash -n scripts/start.sh
 
 ## 许可证
 
-MIT
+AGPL3.0
